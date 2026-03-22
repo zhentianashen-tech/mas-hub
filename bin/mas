@@ -298,7 +298,8 @@ PY
 # ─── Context retrieval ───
 get_context_for_agent(){
   local mas_session_id="$1" mode="${2:-text}"
-  python3 /tmp/get_context_patch.py "$DB_FILE" "$mas_session_id" "$CURRENT_PROJECT" "$mode"
+  # Use adaptive context assembly with relevance scoring
+  python3 /tmp/mas_context.py "$DB_FILE" "$mas_session_id" "$CURRENT_PROJECT" "$mode"
 }
 
 
