@@ -7,7 +7,7 @@
 
 set -u
 
-MAS_VERSION="4.2.1"
+MAS_VERSION="4.2.2"
 MAS_HUB="${HOME}/.openclaw/mas-hub"
 BLACKBOARD="${MAS_HUB}/blackboard"
 DB_FILE="${BLACKBOARD}/shared_context.db"
@@ -754,30 +754,199 @@ PY
   return 0
 }
 
-# ─── Lead mode: autonomous facilitation loop ───
+# ─── Lead mode v2: autonomous facilitation with watchdog ───
+#
+# Features:
+#   1. Task deadline tracking (issued_at, soft/hard deadlines)
+#   2. Auto timeout checks between rounds
+#   3. Auto-escalation to Bootstrap on hard timeout
+#   4. Configurable lead-mode controls
+#   5. Stall-safe synthesis (partial output when agents stall)
+#
+# Controls (env vars):
+#   MAS_LEAD_MAX_ROUNDS=10        Max facilitation rounds
+#   MAS_LEAD_SOFT_TIMEOUT=180     Soft timeout per task (seconds) — warn
+#   MAS_LEAD_HARD_TIMEOUT=480     Hard timeout per task (seconds) — escalate
+#   MAS_LEAD_ESCALATE_AGENT=bootstrap  Agent to escalate stalls to
+#   MAS_LEAD_STALL_ACTION=partial      Action on stall: partial|abort|reassign
+
 cmd_lead(){
   local lead_agent="$1"; shift; local briefing="$*"
   lead_agent=$(normalize_agent "$lead_agent")
   local lead_name; lead_name=$(get_agent_name "$lead_agent")
+
+  # ─── Controls ───
   local max_rounds="${MAS_LEAD_MAX_ROUNDS:-10}"
+  local soft_timeout="${MAS_LEAD_SOFT_TIMEOUT:-180}"
+  local hard_timeout="${MAS_LEAD_HARD_TIMEOUT:-480}"
+  local escalate_agent="${MAS_LEAD_ESCALATE_AGENT:-bootstrap}"
+  local stall_action="${MAS_LEAD_STALL_ACTION:-partial}"
+  local escalate_name; escalate_name=$(get_agent_name "$escalate_agent")
+
+  # ─── Task ledger (temp file, one JSON per line) ───
+  local task_ledger; task_ledger=$(mktemp)
+
   local round=0
+  local total_tasks_dispatched=0
+  local total_tasks_completed=0
+  local total_tasks_failed=0
+  local total_tasks_timedout=0
+  local escalation_count=0
 
   echo -e "${BOLD}${CYAN}╔═══════════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${BOLD}${CYAN}║              MAS Lead Mode — $lead_name directing              ${NC}"
+  echo -e "${BOLD}${CYAN}║           MAS Lead Mode v2 — $lead_name directing              ${NC}"
   echo -e "${BOLD}${CYAN}╚═══════════════════════════════════════════════════════════════╝${NC}"
-  echo -e "Project: ${BOLD}$CURRENT_PROJECT${NC}"
-  echo -e "Max rounds: $max_rounds"
+  echo -e "Project: ${BOLD}$CURRENT_PROJECT${NC} | Max rounds: $max_rounds"
+  echo -e "Timeouts: soft=${soft_timeout}s hard=${hard_timeout}s | Escalate→${BOLD}$escalate_name${NC} | Stall→$stall_action"
   echo ""
 
-  log INFO "stage=lead_start lead=$lead_agent project=$CURRENT_PROJECT briefing_len=${#briefing}"
+  log INFO "stage=lead_start lead=$lead_agent project=$CURRENT_PROJECT max_rounds=$max_rounds soft=$soft_timeout hard=$hard_timeout escalate=$escalate_agent stall=$stall_action"
 
-  # Initial briefing to the lead agent
+  # ─── Helper: record task to ledger ───
+  record_task(){
+    local task_round="$1" agent="$2" instruction="$3" issued_at="$4"
+    local soft_due=$((issued_at + soft_timeout))
+    local hard_due=$((issued_at + hard_timeout))
+    python3 <<PY >> "$task_ledger"
+import json
+print(json.dumps({
+  'round': $task_round, 'agent': '$agent', 'instruction': '''$(printf '%s' "$instruction" | sed "s/'/\\\\'/g")''',
+  'issued_at': $issued_at, 'soft_due': $soft_due, 'hard_due': $hard_due,
+  'status': 'dispatched', 'completed_at': None, 'duration_ms': None, 'error': None
+}))
+PY
+  }
+
+  # ─── Helper: update task status in ledger ───
+  update_task_status(){
+    local agent="$1" task_round="$2" status="$3" completed_at="${4:-0}" duration_ms="${5:-0}" error="${6:-}"
+    python3 <<PY
+import json
+lines = open("$task_ledger").readlines()
+out = []
+updated = False
+for line in lines:
+    t = json.loads(line)
+    if not updated and t['agent'] == '$agent' and t['round'] == $task_round and t['status'] == 'dispatched':
+        t['status'] = '$status'
+        t['completed_at'] = $completed_at if $completed_at else None
+        t['duration_ms'] = $duration_ms if $duration_ms else None
+        t['error'] = '$error' if '$error' else None
+        updated = True
+    out.append(json.dumps(t))
+with open("$task_ledger", 'w') as f:
+    f.write('\n'.join(out) + '\n')
+PY
+  }
+
+  # ─── Helper: build task status report for lead agent ───
+  build_task_report(){
+    python3 <<PY
+import json
+lines = [l.strip() for l in open("$task_ledger").readlines() if l.strip()]
+if not lines:
+    print("[No tasks dispatched yet]")
+else:
+    completed = [json.loads(l) for l in lines if json.loads(l)['status'] == 'completed']
+    failed = [json.loads(l) for l in lines if json.loads(l)['status'] in ('failed', 'timeout', 'escalated')]
+    pending = [json.loads(l) for l in lines if json.loads(l)['status'] == 'dispatched']
+    print(f"TASK LEDGER: {len(completed)} completed, {len(failed)} failed/timeout, {len(pending)} pending")
+    for t in failed:
+        print(f"  ⚠ {t['agent']} (round {t['round']}): {t['status']} — {t.get('error','unknown')}")
+    for t in pending:
+        print(f"  ⏳ {t['agent']} (round {t['round']}): still pending")
+PY
+  }
+
+  # ─── Helper: dispatch a single task with timeout tracking ───
+  # Sets MAS_DISPATCH_RESULT_FILE with response text, returns 0=ok 1=fail
+  dispatch_task_with_watchdog(){
+    local task_round="$1" target_agent="$2" target_instruction="$3"
+    target_agent=$(normalize_agent "$target_agent")
+    local target_name; target_name=$(get_agent_name "$target_agent")
+    local issued_at; issued_at=$(date +%s)
+    MAS_DISPATCH_RESULT_FILE=$(mktemp)
+
+    echo -e "  ${YELLOW}→${NC} Dispatching to ${BOLD}$target_name${NC}..."
+    record_task "$task_round" "$target_agent" "$target_instruction" "$issued_at"
+    total_tasks_dispatched=$((total_tasks_dispatched + 1))
+
+    # Dispatch with timeout = hard_timeout
+    local old_timeout="$MAS_TIMEOUT"
+    MAS_TIMEOUT="$hard_timeout"
+    MAS_LEAD_RESPONSE_FILE=""
+    send_to_agent_silent "$target_agent" "$target_instruction"
+    local send_exit=$?
+    MAS_TIMEOUT="$old_timeout"
+
+    local completed_at; completed_at=$(date +%s)
+    local elapsed=$((completed_at - issued_at))
+    local elapsed_ms=$((elapsed * 1000))
+
+    if [[ $send_exit -eq 0 && -n "$MAS_LEAD_RESPONSE_FILE" ]]; then
+      local resp; resp=$(cat "$MAS_LEAD_RESPONSE_FILE")
+      rm -f "$MAS_LEAD_RESPONSE_FILE"
+      update_task_status "$target_agent" "$task_round" "completed" "$completed_at" "$elapsed_ms"
+      total_tasks_completed=$((total_tasks_completed + 1))
+
+      # Check if response came after soft timeout (warn)
+      if [[ $elapsed -gt $soft_timeout ]]; then
+        echo -e "  ${YELLOW}⏱${NC} $target_name responded but was slow (${elapsed}s > soft ${soft_timeout}s)"
+        log WARN "stage=lead_slow_response agent=$target_agent elapsed=${elapsed}s soft=$soft_timeout"
+      fi
+
+      echo "$resp" > "$MAS_DISPATCH_RESULT_FILE"
+      return 0
+    else
+      # ─── Timeout / failure path ───
+      total_tasks_failed=$((total_tasks_failed + 1))
+
+      if [[ $elapsed -ge $hard_timeout ]]; then
+        # Hard timeout — escalate
+        total_tasks_timedout=$((total_tasks_timedout + 1))
+        update_task_status "$target_agent" "$task_round" "timeout" "$completed_at" "$elapsed_ms" "Hard timeout (${elapsed}s)"
+        echo -e "  ${RED}⏱ HARD TIMEOUT${NC}: $target_name did not respond in ${elapsed}s"
+        log ERROR "stage=lead_hard_timeout agent=$target_agent elapsed=${elapsed}s hard=$hard_timeout"
+
+        # Auto-escalate to escalation agent
+        if [[ "$target_agent" != "$escalate_agent" ]]; then
+          escalation_count=$((escalation_count + 1))
+          echo -e "  ${YELLOW}🚨${NC} Escalating to ${BOLD}$escalate_name${NC}..."
+          log INFO "stage=lead_escalate from=$target_agent to=$escalate_agent round=$task_round"
+          MAS_LEAD_RESPONSE_FILE=""
+          send_to_agent_silent "$escalate_agent" "ESCALATION: $target_name timed out (${elapsed}s) on task in project $CURRENT_PROJECT round $task_round. Task was: $target_instruction. Investigate: check agent health, model availability, session locks. Report status and any remediation."
+          if [[ $? -eq 0 && -n "$MAS_LEAD_RESPONSE_FILE" ]]; then
+            local esc_resp; esc_resp=$(cat "$MAS_LEAD_RESPONSE_FILE")
+            rm -f "$MAS_LEAD_RESPONSE_FILE"
+            cat > "$MAS_DISPATCH_RESULT_FILE" <<ESCEOF
+[TIMEOUT: $target_name did not respond after ${elapsed}s. Escalated to $escalate_name.]
+--- $escalate_name escalation report ---
+$esc_resp
+--- end escalation ---
+ESCEOF
+            return 1
+          fi
+        fi
+
+        echo "[TIMEOUT: $target_name did not respond after ${elapsed}s. Escalation attempted.]" > "$MAS_DISPATCH_RESULT_FILE"
+        return 1
+      else
+        # Regular failure (not timeout)
+        update_task_status "$target_agent" "$task_round" "failed" "$completed_at" "$elapsed_ms" "Agent call failed"
+        echo -e "  ${RED}✗${NC} $target_name failed (${elapsed}s)"
+        echo "[ERROR: $target_name failed to respond (${elapsed}s)]" > "$MAS_DISPATCH_RESULT_FILE"
+        return 1
+      fi
+    fi
+  }
+
+  # ─── Initial briefing ───
   local lead_prompt="You are the lead facilitator for this MAS research project.
 
 TEAM:
 - Wang (researcher): Deep research, financial analysis, data extraction
 - Lynch (auditor): Conflict resolution, fact validation, evidence weighing
-- Bootstrap (IT): System maintenance, infrastructure
+- Bootstrap (IT): System maintenance, infrastructure, escalation handler
 
 YOUR ROLE: Direct the team. Issue tasks to other agents. Synthesize results.
 
@@ -790,12 +959,21 @@ You can issue multiple tasks in one response.
 When all research is complete and you have a final answer, write:
   [DONE] Your final synthesis/conclusion here
 
+TIMEOUT HANDLING:
+- If an agent times out or fails, you will receive a timeout/error report
+- You may: reassign the task to another agent, proceed with partial data, or skip
+- Use [TASK:bootstrap] to investigate infrastructure issues
+- You can write [DONE] with partial findings if enough evidence exists
+
+STALL POLICY: If multiple agents stall, synthesize what you have and note gaps explicitly.
+
 RULES:
 - Be specific in task instructions
 - After receiving agent responses, analyze them before issuing more tasks
 - Flag conflicts between agents explicitly
 - Aim for thoroughness but don't loop unnecessarily
 - You MUST use [TASK:agent] or [DONE] in every response
+- Mark missing evidence clearly with [MISSING: description]
 
 BRIEFING: $briefing"
 
@@ -809,11 +987,15 @@ BRIEFING: $briefing"
 
     # If we have task results from previous round, prepend them
     if [[ -n "$task_results" ]]; then
-      lead_message="Here are the results from the tasks you assigned:
+      local task_report; task_report=$(build_task_report)
+      lead_message="$task_report
+
+Here are the results from the tasks you assigned:
 
 $task_results
 
-Based on these results, continue your analysis. Issue more [TASK:agent] blocks if needed, or write [DONE] with your final conclusion."
+Based on these results, continue your analysis. Issue more [TASK:agent] blocks if needed, or write [DONE] with your final conclusion.
+If any agent timed out or failed, decide: reassign, proceed with partial data, or escalate to bootstrap."
     fi
 
     # Send to lead agent
@@ -821,7 +1003,27 @@ Based on these results, continue your analysis. Issue more [TASK:agent] blocks i
     MAS_LEAD_RESPONSE_FILE=""
     send_to_agent_silent "$lead_agent" "$lead_message"
     if [[ $? -ne 0 || -z "$MAS_LEAD_RESPONSE_FILE" ]]; then
-      emit_error "lead_loop" "Lead agent ($lead_name) failed to respond in round $round"
+      # Lead agent itself failed — this is critical
+      echo -e "  ${RED}✗${NC} Lead agent failed!"
+
+      # ─── Feature 5: Stall-safe synthesis ───
+      if [[ "$stall_action" == "partial" && $total_tasks_completed -gt 0 ]]; then
+        echo -e "  ${YELLOW}📋${NC} Stall-safe mode: synthesizing partial results..."
+        local partial_report; partial_report=$(build_task_report)
+        echo ""
+        echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+        echo -e "${YELLOW}Partial Synthesis [MAS:${CURRENT_PROJECT}] (lead stalled):${NC}"
+        echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+        echo "$partial_report"
+        echo ""
+        echo "Last task results before stall:"
+        echo "$task_results"
+        echo ""
+        log WARN "stage=lead_stall_partial lead=$lead_agent round=$round completed=$total_tasks_completed failed=$total_tasks_failed"
+      else
+        emit_error "lead_loop" "Lead agent ($lead_name) failed to respond in round $round"
+      fi
+      rm -f "$task_ledger"
       return 1
     fi
 
@@ -833,15 +1035,19 @@ Based on these results, continue your analysis. Issue more [TASK:agent] blocks i
     if echo "$lead_text" | grep -q '\[DONE\]'; then
       echo -e "${GREEN}${BOLD}═══ $lead_name concluded the research ═══${NC}"
       echo ""
-      # Extract everything after [DONE]
-      local conclusion
-      conclusion=$(echo "$lead_text" | sed -n '/\[DONE\]/,$ p' | sed '1s/.*\[DONE\]//')
       echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
       echo -e "${BLUE}${lead_name} — Final Conclusion [MAS:${CURRENT_PROJECT}]:${NC}"
       echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
       echo "$lead_text"
       echo ""
-      log INFO "stage=lead_done lead=$lead_agent rounds=$round project=$CURRENT_PROJECT"
+
+      # Print run summary
+      echo -e "${DIM}────────────────────────────────────────────${NC}"
+      echo -e "${DIM}Rounds: $round | Tasks: $total_tasks_dispatched dispatched, $total_tasks_completed completed, $total_tasks_failed failed, $total_tasks_timedout timeout | Escalations: $escalation_count${NC}"
+      echo ""
+
+      log INFO "stage=lead_done lead=$lead_agent rounds=$round project=$CURRENT_PROJECT tasks_dispatched=$total_tasks_dispatched tasks_completed=$total_tasks_completed tasks_failed=$total_tasks_failed tasks_timeout=$total_tasks_timedout escalations=$escalation_count"
+      rm -f "$task_ledger"
       return 0
     fi
 
@@ -849,7 +1055,6 @@ Based on these results, continue your analysis. Issue more [TASK:agent] blocks i
     local tasks_found=0
     task_results=""
 
-    # Extract all task blocks
     local task_file; task_file=$(mktemp)
     local lead_text_file; lead_text_file=$(mktemp)
     printf '%s' "$lead_text" > "$lead_text_file"
@@ -874,49 +1079,68 @@ PY
       continue
     fi
 
-    # Dispatch each task
+    # ─── Dispatch each task with watchdog ───
     while IFS= read -r task_json; do
       local target_agent target_instruction
       target_agent=$(echo "$task_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['agent'])")
       target_instruction=$(echo "$task_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['instruction'])")
 
-      # Validate agent
-      local target_id; target_id=$(get_agent_id "$target_agent")
       local target_name; target_name=$(get_agent_name "$target_agent")
-
-      echo -e "  ${YELLOW}→${NC} Dispatching to ${BOLD}$target_name${NC}..."
       tasks_found=$((tasks_found + 1))
 
-      MAS_LEAD_RESPONSE_FILE=""
-      send_to_agent_silent "$target_agent" "$target_instruction"
-      if [[ $? -eq 0 && -n "$MAS_LEAD_RESPONSE_FILE" ]]; then
-        local resp; resp=$(cat "$MAS_LEAD_RESPONSE_FILE")
-        rm -f "$MAS_LEAD_RESPONSE_FILE"
+      MAS_DISPATCH_RESULT_FILE=""
+      dispatch_task_with_watchdog "$round" "$target_agent" "$target_instruction"
+      local task_exit=$?
+      local task_response=""
+      [[ -n "$MAS_DISPATCH_RESULT_FILE" && -f "$MAS_DISPATCH_RESULT_FILE" ]] && { task_response=$(cat "$MAS_DISPATCH_RESULT_FILE"); rm -f "$MAS_DISPATCH_RESULT_FILE"; }
+
+      if [[ $task_exit -eq 0 ]]; then
         task_results="${task_results}
---- ${target_name}'s response ---
-${resp}
+--- ${target_name}'s response (round $round) ---
+${task_response}
 --- end ${target_name} ---
 "
       else
+        # Failed or timed out — include the error/escalation report
         task_results="${task_results}
---- ${target_name}'s response ---
-[ERROR: Agent failed to respond]
+--- ${target_name} (round $round) — FAILED/TIMEOUT ---
+${task_response}
 --- end ${target_name} ---
 "
       fi
     done < "$task_file"
     rm -f "$task_file"
 
-    echo -e "  ${GREEN}✓${NC} Round $round complete: $tasks_found task(s) dispatched"
+    echo -e "  ${GREEN}✓${NC} Round $round: $tasks_found task(s) dispatched ($total_tasks_completed ok, $total_tasks_failed fail)"
     echo ""
 
   done
 
-  # Max rounds reached
+  # ─── Max rounds: force conclusion ───
   echo -e "${YELLOW}${BOLD}═══ Max rounds ($max_rounds) reached ═══${NC}"
-  echo -e "Asking $lead_name for final conclusion..."
-  send_to_agent "$lead_agent" "Maximum rounds reached. Provide your [DONE] final conclusion now based on all available context."
-  log WARN "stage=lead_max_rounds lead=$lead_agent rounds=$max_rounds project=$CURRENT_PROJECT"
+  local task_report; task_report=$(build_task_report)
+
+  if [[ "$stall_action" == "partial" ]]; then
+    echo -e "Asking $lead_name for stall-safe partial conclusion..."
+    send_to_agent "$lead_agent" "Maximum rounds ($max_rounds) reached.
+
+$task_report
+
+You MUST provide your [DONE] final conclusion NOW based on all available context.
+If evidence is incomplete, note gaps with [MISSING: description] and synthesize what you have.
+Do not request more tasks. Conclude."
+  else
+    echo -e "Asking $lead_name for final conclusion..."
+    send_to_agent "$lead_agent" "Maximum rounds reached. Provide your [DONE] final conclusion now based on all available context."
+  fi
+
+  echo ""
+  echo -e "${DIM}────────────────────────────────────────────${NC}"
+  echo -e "${DIM}Rounds: $max_rounds (max) | Tasks: $total_tasks_dispatched dispatched, $total_tasks_completed completed, $total_tasks_failed failed, $total_tasks_timedout timeout | Escalations: $escalation_count${NC}"
+  echo ""
+
+  log WARN "stage=lead_max_rounds lead=$lead_agent rounds=$max_rounds project=$CURRENT_PROJECT tasks=$total_tasks_dispatched completed=$total_tasks_completed failed=$total_tasks_failed timeout=$total_tasks_timedout escalations=$escalation_count"
+  rm -f "$task_ledger"
 }
 
 # ─── Diagnostics: ping ───
@@ -1160,9 +1384,10 @@ ${BOLD}PROJECT MANAGEMENT:${NC}
 ${BOLD}AGENT MESSAGING:${NC}
   mas @<agent> <message>          Send to agent (within current project)
   mas @all <message>              Broadcast to all configured agents
-  mas lead @<agent> <briefing>    Autonomous facilitation loop:
-                                  lead agent directs the team via [TASK:agent]
-                                  blocks, auto-dispatched until [DONE]
+  mas lead @<agent> <briefing>    Autonomous facilitation with watchdog:
+                                  lead agent directs via [TASK:agent] blocks
+                                  auto-dispatched with timeout tracking
+                                  auto-escalation on stall, partial synthesis
 
 ${BOLD}MODEL SWITCHING:${NC}
   mas model <agent>               Interactive model picker
@@ -1179,7 +1404,11 @@ ${BOLD}OPTIONS:${NC}
   --json                          Machine-readable JSON output
   --no-color                      Disable ANSI colors
   MAS_TIMEOUT=<seconds>           Override agent call timeout (default: 600)
-  MAS_LEAD_MAX_ROUNDS=<n>         Max rounds for lead mode (default: 10)
+  MAS_LEAD_MAX_ROUNDS=<n>         Max facilitation rounds (default: 10)
+  MAS_LEAD_SOFT_TIMEOUT=<s>       Soft timeout per task in seconds (default: 180)
+  MAS_LEAD_HARD_TIMEOUT=<s>       Hard timeout — triggers escalation (default: 480)
+  MAS_LEAD_ESCALATE_AGENT=<name>  Agent for stall escalation (default: bootstrap)
+  MAS_LEAD_STALL_ACTION=<action>  On stall: partial|abort (default: partial)
 
 ${BOLD}MODEL ALIASES:${NC}
   claude-opus-4, claude-opus-4.6, claude-sonnet-4.6, gpt-4.1-mini, gpt-5.4,
