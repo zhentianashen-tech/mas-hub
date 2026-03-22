@@ -636,6 +636,289 @@ broadcast(){
   done <<< "$agents"
 }
 
+# ─── Send to agent (silent, returns text via MAS_LEAD_RESPONSE_FILE) ───
+# Same as send_to_agent but writes response text to a temp file instead of stdout
+# Sets MAS_LEAD_RESPONSE_FILE on success, returns 1 on failure
+send_to_agent_silent(){
+  local agent="$1"; shift; local message="$*"
+  agent=$(normalize_agent "$agent")
+  local agent_id agent_name agent_session_id context
+  agent_id=$(get_agent_id "$agent")
+  agent_name=$(get_agent_name "$agent")
+
+  acquire_lock || return 1
+  agent_session_id=$(get_or_create_agent_session "$CURRENT_SID" "$CURRENT_PROJECT" "$agent" "$agent_id")
+  context=$(get_context_for_agent "$CURRENT_SID")
+  release_lock
+
+  local req_file; req_file=$(mktemp)
+  printf '%s' "$message" > "$req_file"
+
+  local full_message="$context
+
+PROJECT: $CURRENT_PROJECT
+YOUR TURN - $agent_name:
+User request: $message
+
+Instructions:
+- Use the shared MAS context above when relevant.
+- Keep your agent-specific reasoning/session continuity.
+- Stay scoped to project '$CURRENT_PROJECT' unless asked otherwise.
+- Return a direct answer, with clear bullets if helpful.
+- Surface unresolved questions explicitly when relevant.
+- Include links/citations when available."
+
+  log INFO "stage=lead_dispatch agent=$agent project=$CURRENT_PROJECT session=$CURRENT_SID"
+
+  local output_file err_file exit_code t_start t_end duration_ms
+  output_file=$(mktemp); err_file=$(mktemp)
+  t_start=$(date +%s)
+  openclaw agent --agent "$agent_id" --session-id "$agent_session_id" --message "$full_message" --json --timeout "$MAS_TIMEOUT" > "$output_file" 2> "$err_file"
+  exit_code=$?
+  t_end=$(date +%s)
+  duration_ms=$(( (t_end - t_start) * 1000 ))
+
+  if [[ $exit_code -ne 0 ]]; then
+    log ERROR "stage=lead_dispatch_fail agent=$agent exit=$exit_code"
+    echo -e "  ${RED}✗${NC} $agent_name failed (exit=$exit_code, ${duration_ms}ms)"
+    rm -f "$req_file" "$output_file" "$err_file"
+    MAS_LEAD_RESPONSE_FILE=""
+    return 1
+  fi
+
+  local struct_file; struct_file=$(mktemp)
+  extract_structured_response "$output_file" > "$struct_file" 2>> "$err_file"
+
+  if ! check_extraction_error "$struct_file" >/dev/null 2>&1; then
+    local parse_detail; parse_detail=$(cat "$struct_file" 2>/dev/null | head -3)
+    local err_detail; err_detail=$(tail -5 "$err_file" 2>/dev/null | tr '\n' ' ')
+    log ERROR "stage=lead_parse_fail agent=$agent parse_detail=$parse_detail err=$err_detail"
+    echo -e "  ${YELLOW}⚠${NC} $agent_name: response parse issue, retrying..."
+    echo -e "  ${DIM}$parse_detail${NC}"
+    # Retry once with a fresh call
+    rm -f "$output_file" "$struct_file"
+    output_file=$(mktemp); struct_file=$(mktemp)
+    t_start=$(date +%s)
+    openclaw agent --agent "$agent_id" --session-id "$agent_session_id" --message "$full_message" --json --timeout "$MAS_TIMEOUT" > "$output_file" 2>> "$err_file"
+    exit_code=$?; t_end=$(date +%s); duration_ms=$(( (t_end - t_start) * 1000 ))
+    if [[ $exit_code -ne 0 ]]; then
+      echo -e "  ${RED}✗${NC} $agent_name retry also failed (exit=$exit_code)"
+      rm -f "$req_file" "$output_file" "$struct_file" "$err_file"
+      MAS_LEAD_RESPONSE_FILE=""
+      return 1
+    fi
+    extract_structured_response "$output_file" > "$struct_file" 2>> "$err_file"
+    if ! check_extraction_error "$struct_file" >/dev/null 2>&1; then
+      echo -e "  ${RED}✗${NC} $agent_name retry also unparseable"
+      rm -f "$req_file" "$output_file" "$struct_file" "$err_file"
+      MAS_LEAD_RESPONSE_FILE=""
+      return 1
+    fi
+    echo -e "  ${GREEN}✓${NC} Retry succeeded"
+  fi
+
+  local real_sid
+  real_sid=$(python3 - <<PY
+import json
+with open("$struct_file") as f: s=json.load(f)
+print(s.get('agent_session_id',''))
+PY
+)
+  [[ -n "$real_sid" ]] && agent_session_id="$real_sid"
+
+  acquire_lock || return 1
+  add_exchange "$CURRENT_PROJECT" "$CURRENT_SID" "$agent" "$agent_id" "$agent_session_id" "$req_file" "$struct_file" complete "$err_file"
+  append_agent_memory "$agent" "$req_file" "$struct_file"
+  release_lock
+
+  local text
+  text=$(python3 - <<PY
+import json
+with open("$struct_file") as f: s=json.load(f)
+print(s.get('text',''))
+PY
+)
+
+  # Print agent response compactly
+  echo ""
+  echo -e "  ${CYAN}───${NC} ${BLUE}${agent_name}${NC} ${DIM}(${duration_ms}ms)${NC} ${CYAN}───${NC}"
+  echo "$text" | sed 's/^/  /'
+  echo ""
+
+  # Write to response file for lead loop
+  local resp_file; resp_file=$(mktemp)
+  echo "$text" > "$resp_file"
+  MAS_LEAD_RESPONSE_FILE="$resp_file"
+
+  rm -f "$req_file" "$output_file" "$struct_file" "$err_file"
+  return 0
+}
+
+# ─── Lead mode: autonomous facilitation loop ───
+cmd_lead(){
+  local lead_agent="$1"; shift; local briefing="$*"
+  lead_agent=$(normalize_agent "$lead_agent")
+  local lead_name; lead_name=$(get_agent_name "$lead_agent")
+  local max_rounds="${MAS_LEAD_MAX_ROUNDS:-10}"
+  local round=0
+
+  echo -e "${BOLD}${CYAN}╔═══════════════════════════════════════════════════════════════╗${NC}"
+  echo -e "${BOLD}${CYAN}║              MAS Lead Mode — $lead_name directing              ${NC}"
+  echo -e "${BOLD}${CYAN}╚═══════════════════════════════════════════════════════════════╝${NC}"
+  echo -e "Project: ${BOLD}$CURRENT_PROJECT${NC}"
+  echo -e "Max rounds: $max_rounds"
+  echo ""
+
+  log INFO "stage=lead_start lead=$lead_agent project=$CURRENT_PROJECT briefing_len=${#briefing}"
+
+  # Initial briefing to the lead agent
+  local lead_prompt="You are the lead facilitator for this MAS research project.
+
+TEAM:
+- Wang (researcher): Deep research, financial analysis, data extraction
+- Lynch (auditor): Conflict resolution, fact validation, evidence weighing
+- Bootstrap (IT): System maintenance, infrastructure
+
+YOUR ROLE: Direct the team. Issue tasks to other agents. Synthesize results.
+
+TASK PROTOCOL:
+When you need another agent to do something, write a task block:
+  [TASK:wang] Your instruction to Wang here
+  [TASK:lynch] Your instruction to Lynch here
+
+You can issue multiple tasks in one response.
+When all research is complete and you have a final answer, write:
+  [DONE] Your final synthesis/conclusion here
+
+RULES:
+- Be specific in task instructions
+- After receiving agent responses, analyze them before issuing more tasks
+- Flag conflicts between agents explicitly
+- Aim for thoroughness but don't loop unnecessarily
+- You MUST use [TASK:agent] or [DONE] in every response
+
+BRIEFING: $briefing"
+
+  local lead_message="$lead_prompt"
+  local task_results=""
+
+  while [[ $round -lt $max_rounds ]]; do
+    round=$((round + 1))
+    echo -e "${BOLD}═══ Round $round / $max_rounds ═══${NC}"
+    echo ""
+
+    # If we have task results from previous round, prepend them
+    if [[ -n "$task_results" ]]; then
+      lead_message="Here are the results from the tasks you assigned:
+
+$task_results
+
+Based on these results, continue your analysis. Issue more [TASK:agent] blocks if needed, or write [DONE] with your final conclusion."
+    fi
+
+    # Send to lead agent
+    echo -e "  ${YELLOW}→${NC} Asking ${BOLD}$lead_name${NC}..."
+    MAS_LEAD_RESPONSE_FILE=""
+    send_to_agent_silent "$lead_agent" "$lead_message"
+    if [[ $? -ne 0 || -z "$MAS_LEAD_RESPONSE_FILE" ]]; then
+      emit_error "lead_loop" "Lead agent ($lead_name) failed to respond in round $round"
+      return 1
+    fi
+
+    local lead_text
+    lead_text=$(cat "$MAS_LEAD_RESPONSE_FILE")
+    rm -f "$MAS_LEAD_RESPONSE_FILE"
+
+    # Check for [DONE]
+    if echo "$lead_text" | grep -q '\[DONE\]'; then
+      echo -e "${GREEN}${BOLD}═══ $lead_name concluded the research ═══${NC}"
+      echo ""
+      # Extract everything after [DONE]
+      local conclusion
+      conclusion=$(echo "$lead_text" | sed -n '/\[DONE\]/,$ p' | sed '1s/.*\[DONE\]//')
+      echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+      echo -e "${BLUE}${lead_name} — Final Conclusion [MAS:${CURRENT_PROJECT}]:${NC}"
+      echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+      echo "$lead_text"
+      echo ""
+      log INFO "stage=lead_done lead=$lead_agent rounds=$round project=$CURRENT_PROJECT"
+      return 0
+    fi
+
+    # Parse [TASK:agent] blocks
+    local tasks_found=0
+    task_results=""
+
+    # Extract all task blocks
+    local task_file; task_file=$(mktemp)
+    local lead_text_file; lead_text_file=$(mktemp)
+    printf '%s' "$lead_text" > "$lead_text_file"
+    python3 <<PY > "$task_file"
+import re, json
+with open("$lead_text_file") as f:
+    text = f.read()
+pattern = r'\[TASK:(\w+)\]\s*(.*?)(?=\[TASK:|\[DONE\]|$)'
+tasks = re.findall(pattern, text, re.DOTALL)
+for agent, instruction in tasks:
+    instruction = instruction.strip()
+    if instruction:
+        print(json.dumps({'agent': agent.lower(), 'instruction': instruction}))
+PY
+    rm -f "$lead_text_file"
+
+    if [[ ! -s "$task_file" ]]; then
+      echo -e "  ${YELLOW}⚠${NC} $lead_name didn't issue any [TASK:] or [DONE] blocks."
+      echo -e "  ${DIM}Nudging to follow protocol...${NC}"
+      lead_message="You must use [TASK:agent] blocks to assign work or [DONE] to conclude. Please restate your instructions using the correct format."
+      rm -f "$task_file"
+      continue
+    fi
+
+    # Dispatch each task
+    while IFS= read -r task_json; do
+      local target_agent target_instruction
+      target_agent=$(echo "$task_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['agent'])")
+      target_instruction=$(echo "$task_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['instruction'])")
+
+      # Validate agent
+      local target_id; target_id=$(get_agent_id "$target_agent")
+      local target_name; target_name=$(get_agent_name "$target_agent")
+
+      echo -e "  ${YELLOW}→${NC} Dispatching to ${BOLD}$target_name${NC}..."
+      tasks_found=$((tasks_found + 1))
+
+      MAS_LEAD_RESPONSE_FILE=""
+      send_to_agent_silent "$target_agent" "$target_instruction"
+      if [[ $? -eq 0 && -n "$MAS_LEAD_RESPONSE_FILE" ]]; then
+        local resp; resp=$(cat "$MAS_LEAD_RESPONSE_FILE")
+        rm -f "$MAS_LEAD_RESPONSE_FILE"
+        task_results="${task_results}
+--- ${target_name}'s response ---
+${resp}
+--- end ${target_name} ---
+"
+      else
+        task_results="${task_results}
+--- ${target_name}'s response ---
+[ERROR: Agent failed to respond]
+--- end ${target_name} ---
+"
+      fi
+    done < "$task_file"
+    rm -f "$task_file"
+
+    echo -e "  ${GREEN}✓${NC} Round $round complete: $tasks_found task(s) dispatched"
+    echo ""
+
+  done
+
+  # Max rounds reached
+  echo -e "${YELLOW}${BOLD}═══ Max rounds ($max_rounds) reached ═══${NC}"
+  echo -e "Asking $lead_name for final conclusion..."
+  send_to_agent "$lead_agent" "Maximum rounds reached. Provide your [DONE] final conclusion now based on all available context."
+  log WARN "stage=lead_max_rounds lead=$lead_agent rounds=$max_rounds project=$CURRENT_PROJECT"
+}
+
 # ─── Diagnostics: ping ───
 cmd_ping(){
   local agent; agent=$(normalize_agent "$1")
@@ -877,6 +1160,9 @@ ${BOLD}PROJECT MANAGEMENT:${NC}
 ${BOLD}AGENT MESSAGING:${NC}
   mas @<agent> <message>          Send to agent (within current project)
   mas @all <message>              Broadcast to all configured agents
+  mas lead @<agent> <briefing>    Autonomous facilitation loop:
+                                  lead agent directs the team via [TASK:agent]
+                                  blocks, auto-dispatched until [DONE]
 
 ${BOLD}MODEL SWITCHING:${NC}
   mas model <agent>               Interactive model picker
@@ -893,6 +1179,7 @@ ${BOLD}OPTIONS:${NC}
   --json                          Machine-readable JSON output
   --no-color                      Disable ANSI colors
   MAS_TIMEOUT=<seconds>           Override agent call timeout (default: 600)
+  MAS_LEAD_MAX_ROUNDS=<n>         Max rounds for lead mode (default: 10)
 
 ${BOLD}MODEL ALIASES:${NC}
   claude-opus-4, claude-opus-4.6, claude-sonnet-4.6, gpt-4.1-mini, gpt-5.4,
@@ -940,6 +1227,12 @@ case "${1:-}" in
   ping) [[ -z "${2:-}" ]] && { echo "Usage: mas ping <agent>"; exit 1; }; cmd_ping "$2" ;;
   doctor|doc) cmd_doctor ;;
   version|--version|-v) echo "MAS v${MAS_VERSION}" ;;
+  lead)
+    lead_target="${2:-}"
+    [[ -z "$lead_target" ]] && { echo "Usage: mas lead @<agent> <briefing>"; exit 1; }
+    shift 2
+    [[ -z "${1:-}" ]] && { echo "Usage: mas lead @<agent> <briefing>"; exit 1; }
+    cmd_lead "$lead_target" "$*" ;;
   @archie|@wang|@lynch|@bootstrap|@bob) cmd="$1"; shift; send_to_agent "$cmd" "$*" ;;
   @all) shift; broadcast "$*" ;;
   help|--help|-h) show_help ;;
