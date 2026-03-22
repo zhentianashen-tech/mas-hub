@@ -1,0 +1,69 @@
+{
+  "version": "1.0.0",
+  "name": "MAS (Multi-Agent System)",
+  "description": "Unified interface for Archie, Wang, and Lynch",
+  "created": "2026-03-22",
+  
+  "agents": {
+    "archie": {
+      "id": "main",
+      "name": "Archie",
+      "emoji": "🦉",
+      "role": "General Intelligence",
+      "strengths": ["synthesis", "summarization", "creative thinking"],
+      "model": "moonshot/kimi-k2.5"
+    },
+    "wang": {
+      "id": "wang",
+      "name": "Wang",
+      "emoji": "🦉",
+      "role": "Financial Research",
+      "strengths": ["deep research", "financial analysis", "data extraction"],
+      "model": "zenmux/anthropic/claude-opus-4"
+    },
+    "lynch": {
+      "id": "lynch",
+      "name": "Lynch",
+      "emoji": "⚖️",
+      "role": "The Arbitrator",
+      "strengths": ["conflict resolution", "fact validation", "evidence weighing"],
+      "model": "zenmux/openai/gpt-4.1-mini"
+    }
+  },
+  
+  "workflows": {
+    "research-validate-summarize": {
+      "description": "Deep research with validation and synthesis",
+      "agents": ["wang", "lynch", "archie"],
+      "steps": 3,
+      "timeout": 1200
+    },
+    "debate": {
+      "description": "Adversarial debate with arbitration",
+      "agents": ["wang", "archie", "lynch"],
+      "steps": 8,
+      "timeout": 1800
+    }
+  },
+  
+  "conflict_detection": {
+    "enabled": true,
+    "check_interval_seconds": 30,
+    "numerical_variance_threshold": 0.05,
+    "auto_trigger_lynch": true
+  },
+  
+  "logging": {
+    "level": "info",
+    "audit_trail": true,
+    "blackboard_sync": true,
+    "retention_days": 30
+  },
+  
+  "communication": {
+    "protocol": "file_based",
+    "inbox_format": "json",
+    "max_message_size": "10MB",
+    "ttl_hours": 48
+  }
+}

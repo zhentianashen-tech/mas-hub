@@ -1,0 +1,56 @@
+# MAS Workflow Template
+# Usage: mas workflow <template-name> "<context>"
+
+name: research-validate-summarize
+description: Deep research with validation and synthesis
+version: 1.0
+triggers:
+  - keywords: ["research", "analyze", "investigate"]
+  - pattern: ".*"
+
+steps:
+  - id: 1
+    name: research
+    agent: wang
+    action: deep_research
+    description: Conduct comprehensive research
+    input: "{{USER_QUERY}}"
+    output: research_report
+    timeout: 600
+    
+  - id: 2
+    name: validate
+    agent: lynch
+    action: validate_facts
+    description: Validate research findings
+    input: "{{steps.research.output}}"
+    condition: auto_detect_conflicts
+    timeout: 300
+    on_conflict: escalate
+    
+  - id: 3
+    name: synthesize
+    agent: archie
+    action: synthesize_report
+    description: Create final summary
+    input: 
+      - "{{steps.research.output}}"
+      - "{{steps.validate.output}}"
+    output: final_summary
+    timeout: 300
+
+outputs:
+  - name: research_report
+    type: markdown
+    path: "{{MAS_HUB}}/outbox/research-{{TIMESTAMP}}.md"
+  - name: validation_report
+    type: json
+    path: "{{MAS_HUB}}/outbox/validation-{{TIMESTAMP}}.json"
+  - name: final_summary
+    type: markdown
+    path: "{{MAS_HUB}}/outbox/summary-{{TIMESTAMP}}.md"
+
+logging:
+  level: info
+  audit: true
+  blackboard: true

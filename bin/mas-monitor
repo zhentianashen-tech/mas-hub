@@ -1,0 +1,105 @@
+#!/bin/bash
+# MAS Monitor - Background service for conflict detection and auto-arbitration
+# Run: mas-monitor & (in background)
+
+MAS_HUB="${HOME}/.openclaw/mas-hub"
+CHECK_INTERVAL=${MAS_CHECK_INTERVAL:-30}  # seconds
+
+log() {
+    local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    echo "[$timestamp] [MONITOR] $*" >> "${MAS_HUB}/logs/monitor.log"
+}
+
+# Detect conflicts between agent outputs
+detect_conflicts() {
+    local outbox="${MAS_HUB}/outbox"
+    local last_check_file="${MAS_HUB}/.last_check"
+    local last_check=0
+    
+    if [[ -f "$last_check_file" ]]; then
+        last_check=$(cat "$last_check_file")
+    fi
+    
+    # Find recent outputs
+    local recent_files=$(find "$outbox" -name "*.json" -newer "$last_check_file" 2>/dev/null | head -10)
+    
+    if [[ -z "$recent_files" ]]; then
+        return 0
+    fi
+    
+    # Group by workflow/thread if applicable
+    # For now, simple pairwise comparison
+    local files=($recent_files)
+    local count=${#files[@]}
+    
+    for ((i=0; i<count; i++)); do
+        for ((j=i+1; j<count; j++)); do
+            local file1="${files[$i]}"
+            local file2="${files[$j]}"
+            
+            # Extract agent names
+            local agent1=$(basename "$file1" | cut -d'-' -f1)
+            local agent2=$(basename "$file2" | cut -d'-' -f1)
+            
+            # Skip if same agent
+            if [[ "$agent1" == "$agent2" ]]; then
+                continue
+            fi
+            
+            # Extract content for comparison
+            local content1=$(cat "$file1" 2>/dev/null | grep '"text"' | head -1)
+            local content2=$(cat "$file2" 2>/dev/null | grep '"text"' | head -1)
+            
+            # Check for numerical conflicts (simple regex)
+            local nums1=$(echo "$content1" | grep -oE '\$[0-9]+(\.[0-9]+)?[BMK]?|[0-9]+(\.[0-9]+)?%' | sort -u)
+            local nums2=$(echo "$content2" | grep -oE '\$[0-9]+(\.[0-9]+)?[BMK]?|[0-9]+(\.[0-9]+)?%' | sort -u)
+            
+            if [[ -n "$nums1" && -n "$nums2" && "$nums1" != "$nums2" ]]; then
+                log "Potential conflict detected between $agent1 and $agent2"
+                
+                # Create conflict alert
+                local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+                local alert_file="${MAS_HUB}/inbox/lynch/${timestamp}-conflict-alert.json"
+                
+                cat > "$alert_file" << EOF
+{
+  "message_id": "$(uuidgen 2>/dev/null || date +%s%N)",
+  "timestamp": "${timestamp}",
+  "from": "system",
+  "to": "lynch",
+  "type": "conflict_alert",
+  "content": "CONFLICT DETECTED: Divergent outputs from ${agent1} and ${agent2}. Numerical values differ: ${nums1} vs ${nums2}",
+  "context": {
+    "agents": ["${agent1}", "${agent2}"],
+    "files": ["${file1}", "${file2}"],
+    "detected_at": "${timestamp}"
+  },
+  "metadata": {
+    "auto_detected": true,
+    "priority": "high"
+  }
+}
+EOF
+                log "Conflict alert sent to Lynch: $alert_file"
+            fi
+        done
+    done
+    
+    # Update last check time
+    date +%s > "$last_check_file"
+}
+
+# Main monitoring loop
+main() {
+    log "MAS Monitor started (PID: $$)"
+    log "Check interval: ${CHECK_INTERVAL}s"
+    
+    while true; do
+        detect_conflicts
+        sleep "$CHECK_INTERVAL"
+    done
+}
+
+trap 'log "MAS Monitor stopped"; exit 0' SIGTERM SIGINT
+
+main

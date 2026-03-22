@@ -1,0 +1,107 @@
+# MAS Debate Workflow Template
+# Usage: mas debate "<topic>" --pro wang --con archie
+
+name: adversarial-debate
+description: Two agents debate a topic with Lynch as judge
+version: 1.0
+
+roles:
+  pro:
+    agent: wang
+    stance: supporting
+    evidence_priority: [L1, L2, L3, L4]
+  
+  con:
+    agent: archie  
+    stance: opposing
+    evidence_priority: [L1, L2, L3, L4]
+  
+  judge:
+    agent: lynch
+    role: arbitrator
+    mandate: evaluate evidence quality, not argument style
+
+rounds: 3
+
+steps:
+  - id: 1
+    name: pro_opening
+    agent: wang
+    action: present_argument
+    input: "{{USER_QUERY}}"
+    output: pro_opening_statement
+    
+  - id: 2
+    name: con_opening
+    agent: archie
+    action: present_counterargument
+    input: 
+      - "{{USER_QUERY}}"
+      - "{{steps.pro_opening.output}}"
+    output: con_opening_statement
+    
+  - id: 3
+    name: pro_rebuttal
+    agent: wang
+    action: rebut
+    input: "{{steps.con_opening.output}}"
+    output: pro_rebuttal
+    
+  - id: 4
+    name: con_rebuttal
+    agent: archie
+    action: rebut
+    input: "{{steps.pro_rebuttal.output}}"
+    output: con_rebuttal
+    
+  - id: 5
+    name: pro_closing
+    agent: wang
+    action: closing_statement
+    input: ["{{steps.pro_opening.output}}", "{{steps.pro_rebuttal.output}}"]
+    output: pro_closing
+    
+  - id: 6
+    name: con_closing
+    agent: archie
+    action: closing_statement
+    input: ["{{steps.con_opening.output}}", "{{steps.con_rebuttal.output}}"]
+    output: con_closing
+    
+  - id: 7
+    name: arbitration
+    agent: lynch
+    action: adjudicate_debate
+    input:
+      topic: "{{USER_QUERY}}"
+      pro_arguments: ["{{steps.pro_opening.output}}", "{{steps.pro_rebuttal.output}}", "{{steps.pro_closing.output}}"]
+      con_arguments: ["{{steps.con_opening.output}}", "{{steps.con_rebuttal.output}}", "{{steps.con_closing.output}}"]
+    output: judgment
+    
+  - id: 8
+    name: synthesis
+    agent: archie
+    action: synthesize_debate
+    input:
+      topic: "{{USER_QUERY}}"
+      judgment: "{{steps.arbitration.output}}"
+      pro_case: "{{steps.pro_closing.output}}"
+      con_case: "{{steps.con_closing.output}}"
+    output: final_analysis
+
+outputs:
+  - name: judgment
+    type: json
+    contains:
+      - winner: pro|con|inconclusive
+      - reasoning: string
+      - evidence_scores: object
+      - confidence: float
+  
+  - name: final_analysis
+    type: markdown
+    contains:
+      - balanced_view
+      - key_insights
+      - remaining_uncertainties
+      - recommended_action

@@ -1,0 +1,24 @@
+{
+  "message_id": "{{UUID}}",
+  "timestamp": "{{ISO8601}}",
+  "from": "user|archie|wang|lynch",
+  "to": "archie|wang|lynch|broadcast",
+  "type": "direct|broadcast|workflow_step|conflict_alert|response",
+  "content": "Message content here",
+  "context": {
+    "workflow_id": "optional-workflow-uuid",
+    "step_number": 0,
+    "total_steps": 0,
+    "dependencies": [],
+    "priority": "low|normal|high|critical",
+    "timeout_seconds": 300
+  },
+  "metadata": {
+    "source_agent": "",
+    "confidence": 0.0,
+    "evidence_level": "L1|L2|L3|L4",
+    "tags": []
+  },
+  "thread_id": "optional-thread-uuid",
+  "reply_to": "optional-parent-message-id"
+}
