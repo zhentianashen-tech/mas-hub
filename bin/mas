@@ -424,7 +424,9 @@ PY
 
 # ─── Model switching ───
 agent_index_for_model(){
-  case "$1" in archie) echo 1 ;; wang) echo 2 ;; lynch) echo 3 ;; bootstrap) echo 4 ;; *) echo "" ;; esac
+  # Indices from: openclaw config get agents.list
+  # 0=main(Archie) 1=work 2=wang 3=lynch 4=bootstrap
+  case "$1" in archie) echo 0 ;; wang) echo 2 ;; lynch) echo 3 ;; bootstrap) echo 4 ;; *) echo "" ;; esac
 }
 
 resolve_model_alias(){
@@ -451,7 +453,8 @@ show_model(){
   local agent; agent=$(normalize_agent "$1")
   local idx; idx=$(agent_index_for_model "$agent")
   [[ -z "$idx" ]] && { emit_error "model" "Unknown agent: $agent"; return 1; }
-  local model; model=$(openclaw config get agents.list[$idx].model.primary 2>/dev/null)
+  local path="agents.list[${idx}].model.primary"
+  local model; model=$(openclaw config get "$path" 2>/dev/null)
   if [[ "$OUTPUT_JSON" -eq 1 ]]; then
     printf '{"agent":"%s","model":"%s"}\n' "$agent" "$model"
   else
@@ -464,7 +467,8 @@ set_model(){
   local idx; idx=$(agent_index_for_model "$agent")
   [[ -z "$idx" ]] && { emit_error "model" "Unknown agent: $agent"; return 1; }
   local model; model=$(resolve_model_alias "$alias")
-  openclaw config set agents.list[$idx].model.primary "$model" >/dev/null 2>&1
+  local path="agents.list[${idx}].model.primary"
+  openclaw config set "$path" "$model" >/dev/null 2>&1
   if [[ "$OUTPUT_JSON" -eq 1 ]]; then
     printf '{"status":"ok","agent":"%s","model":"%s"}\n' "$agent" "$model"
   else
@@ -476,7 +480,8 @@ models_overview(){
   echo -e "${BOLD}Current agent models:${NC}"
   for agent in archie wang lynch bootstrap; do
     local idx; idx=$(agent_index_for_model "$agent")
-    local model; model=$(openclaw config get agents.list[$idx].model.primary 2>/dev/null)
+    local path="agents.list[${idx}].model.primary"
+    local model; model=$(openclaw config get "$path" 2>/dev/null)
     echo -e "  $(get_agent_name "$agent"): ${CYAN}$model${NC}"
   done
 }
@@ -675,13 +680,14 @@ PY
   fi
 
   if [[ "$OUTPUT_JSON" -eq 1 ]]; then
+    local py_ok="False"; [[ "$response_ok" == "true" ]] && py_ok="True"
     python3 <<PY
 import json
 print(json.dumps({
-  'status': 'ok' if $response_ok else 'error',
+  'status': 'ok' if $py_ok else 'error',
   'agent': '$agent', 'agent_id': '$agent_id', 'agent_name': '$agent_name',
   'exit_code': $exit_code, 'duration_ms': $duration_ms,
-  'response_ok': $response_ok,
+  'response_ok': $py_ok,
   'response_text': '''$response_text''',
   'model': '''$model''', 'provider': '''$provider'''
 }, ensure_ascii=False, indent=2))
@@ -786,7 +792,8 @@ PY
   echo -e "${BOLD}Agent models:${NC}"
   for agent in archie wang lynch bootstrap; do
     local idx; idx=$(agent_index_for_model "$agent")
-    local model; model=$(openclaw config get agents.list[$idx].model.primary 2>/dev/null)
+    local path="agents.list[${idx}].model.primary"
+    local model; model=$(openclaw config get "$path" 2>/dev/null)
     if [[ -n "$model" ]]; then
       echo -e "  ${GREEN}✓${NC} $(get_agent_name "$agent"): $model"
     else
