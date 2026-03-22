@@ -299,27 +299,42 @@ PY
 get_context_for_agent(){
   local mas_session_id="$1" mode="${2:-text}"
   python3 <<PY
-import sqlite3, json
+import sqlite3, json, textwrap
 conn=sqlite3.connect("$DB_FILE"); cur=conn.cursor()
-cur.execute("SELECT timestamp, agent, user_request, response_summary, key_points_json, open_questions_json, citations_json, artifacts_json, status FROM exchanges WHERE mas_session_id=? ORDER BY id DESC LIMIT 8", ("$mas_session_id",))
+cur.execute("SELECT timestamp, agent, user_request, response_text, response_summary, key_points_json, open_questions_json, citations_json, artifacts_json, status FROM exchanges WHERE mas_session_id=? ORDER BY id DESC LIMIT 8", ("$mas_session_id",))
 rows=cur.fetchall(); conn.close()
 if "$mode"=='json':
     out=[]
-    for ts, agent, req, summary, kp, oq, cj, aj, status in reversed(rows):
-        out.append({'timestamp':ts,'agent':agent,'user_request':req,'response_summary':summary,'key_points':json.loads(kp or '[]'),'open_questions':json.loads(oq or '[]'),'citations':json.loads(cj or '[]'),'artifacts':json.loads(aj or '[]'),'status':status})
+    for ts, agent, req, resp_text, summary, kp, oq, cj, aj, status in reversed(rows):
+        out.append({'timestamp':ts,'agent':agent,'user_request':req,'response_text':resp_text,'response_summary':summary,'key_points':json.loads(kp or '[]'),'open_questions':json.loads(oq or '[]'),'citations':json.loads(cj or '[]'),'artifacts':json.loads(aj or '[]'),'status':status})
     print(json.dumps({'project':'$CURRENT_PROJECT','mas_session_id':'$mas_session_id','exchanges':out}, ensure_ascii=False, indent=2))
 else:
     if not rows: print('[No previous shared context in this MAS session]')
     else:
         print('═══ SHARED MAS CONTEXT ═══')
-        print(f"Project: $CURRENT_PROJECT | Session: $mas_session_id | Exchanges: {len(rows)}\n")
-        for ts, agent, req, summary, kp, oq, cj, aj, status in reversed(rows):
+        print(f"Project: $CURRENT_PROJECT | Session: {mas_session_id} | Exchanges: {len(rows)}\n")
+        # Show full content for the 2 most recent exchanges, summaries for older ones
+        rows_rev = list(reversed(rows))
+        for i, row in enumerate(rows_rev):
+            (ts, agent, req, resp_text, summary, kp, oq, cj, aj, status) = row
             print(f"[{(ts or '')[11:16]}] {agent} ({status})")
             print(f"  request: {(req or '')[:120]}")
-            if summary: print(f"  summary: {summary[:180]}")
+            # For most recent exchanges, show full response text
+            if i < 2 and resp_text and resp_text.strip():
+                # Wrap to 100 char width for readability
+                wrapped = textwrap.fill(resp_text.strip(), width=100, subsequent_indent='  ')
+                print(f"  FULL RESPONSE:\n  {wrapped}")
+            elif summary:
+                print(f"  summary: {summary[:280]}")
             try: pts=json.loads(kp or '[]')
             except: pts=[]
-            if pts: print(f"  key points: {'; '.join(pts[:3])[:180]}")
+            if pts: print(f"  key points: {'; '.join(pts[:5])[:280]}")
+            try: oqs=json.loads(oq or '[]')
+            except: oqs=[]
+            if oqs: print(f"  open questions: {'; '.join(oqs[:3])[:200]}")
+            try: cites=json.loads(cj or '[]')
+            except: cites=[]
+            if cites: print(f"  citations: {'; '.join(cites[:3])[:200]}")
             print('')
         print('═══════════════════════════')
 PY
