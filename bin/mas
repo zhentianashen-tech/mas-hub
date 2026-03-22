@@ -910,7 +910,11 @@ while [[ $# -gt 0 ]]; do
     *) POSITIONAL+=("$1"); shift ;;
   esac
 done
-set -- "${POSITIONAL[@]}"
+if [[ ${#POSITIONAL[@]} -gt 0 ]]; then
+  set -- "${POSITIONAL[@]}"
+else
+  set --
+fi
 
 ensure_db; migrate_legacy_json_if_needed; init_state
 CURRENT_PROJECT=$(get_current_project); [[ -z "$CURRENT_PROJECT" ]] && CURRENT_PROJECT=default
@@ -939,5 +943,6 @@ case "${1:-}" in
   @archie|@wang|@lynch|@bootstrap|@bob) cmd="$1"; shift; send_to_agent "$cmd" "$*" ;;
   @all) shift; broadcast "$*" ;;
   help|--help|-h) show_help ;;
+  "") show_help ;;
   *) emit_error "usage" "Unknown command: ${1:-}" "Run: mas help"; exit 1 ;;
 esac
