@@ -443,6 +443,7 @@ resolve_model_alias(){
     doubao-seed|doubao) echo "zenmux/volcengine/doubao-seed-2.0-pro" ;;
     grok-4.2|grok|fast) echo "zenmux/x-ai/grok-4.2-fast" ;;
     kimi|moonshot) echo "moonshot/kimi-k2.5" ;;
+    minimax|minimax-m2.7|m2.7) echo "minimax/MiniMax-M2.7" ;;
     local-qwen|qwen-local|qwen9b) echo "ollama/qwen3.5:9b" ;;
     local-phi4|phi4|phi) echo "ollama/phi4:latest" ;;
     *) echo "$1" ;;
@@ -493,7 +494,7 @@ model_menu(){
   echo "  4) GPT-4.1 Mini          5) GPT-5.4               6) GPT-5.3 Codex"
   echo "  7) Qwen 3.5 Plus         8) Qwen 3 Max            9) GLM-5 Turbo"
   echo " 10) Doubao Seed 2.0      11) Grok 4.2 Fast        12) Kimi K2.5"
-  echo " 13) Local Qwen 3.5 9B   14) Local Phi-4"
+  echo " 13) MiniMax M2.7        14) Local Qwen 3.5 9B    15) Local Phi-4"
   echo "  c) Current model         q) Cancel"
   echo -n "Choice: "; read choice
   case "$choice" in
@@ -503,7 +504,8 @@ model_menu(){
     7) set_model "$agent" qwen-3.5-plus ;; 8) set_model "$agent" qwen-3-max ;;
     9) set_model "$agent" glm-5-turbo ;; 10) set_model "$agent" doubao-seed ;;
     11) set_model "$agent" grok-4.2 ;; 12) set_model "$agent" kimi ;;
-    13) set_model "$agent" local-qwen ;; 14) set_model "$agent" local-phi4 ;;
+    13) set_model "$agent" minimax ;; 14) set_model "$agent" local-qwen ;;
+    15) set_model "$agent" local-phi4 ;;
     c|C) show_model "$agent" ;; *) echo "Cancelled." ;;
   esac
 }
@@ -1413,7 +1415,7 @@ ${BOLD}OPTIONS:${NC}
 ${BOLD}MODEL ALIASES:${NC}
   claude-opus-4, claude-opus-4.6, claude-sonnet-4.6, gpt-4.1-mini, gpt-5.4,
   gpt-5.3-codex, qwen-3.5-plus, qwen-3-max, glm-5-turbo, doubao-seed,
-  grok-4.2, kimi, local-qwen, local-phi4
+  grok-4.2, kimi, minimax, local-qwen, local-phi4
 EOF
 }
 
