@@ -1,6 +1,7 @@
 #!/bin/bash
-# MAS (Multi-Agent System) Orchestrator v4.2.1
+# MAS (Multi-Agent System) Orchestrator v4.3.2
 # Project-scoped shared context + per-agent MAS sessions + diagnostics
+# Features: Adaptive context, Stage Gate, Context Maintenance System
 #
 # Runtime data lives in: ~/.openclaw/mas-hub/
 # Project source lives in: ~/Projects/mas-hub/
@@ -745,10 +746,12 @@ PY
 #
 # Controls (env vars):
 #   MAS_LEAD_MAX_ROUNDS=10        Max facilitation rounds
-#   MAS_LEAD_SOFT_TIMEOUT=180     Soft timeout per task (seconds) — warn
-#   MAS_LEAD_HARD_TIMEOUT=480     Hard timeout per task (seconds) — escalate
+#   MAS_LEAD_SOFT_TIMEOUT=300     Soft timeout per task (seconds) — warn (5 min)
+#   MAS_LEAD_HARD_TIMEOUT=900     Hard timeout per task (seconds) — escalate (15 min)
 #   MAS_LEAD_ESCALATE_AGENT=bootstrap  Agent to escalate stalls to
 #   MAS_LEAD_STALL_ACTION=partial      Action on stall: partial|abort|reassign
+#
+# Note: Equity research tasks often take 5-15 minutes. Timeouts adjusted accordingly.
 
 cmd_lead(){
   local lead_agent="$1"; shift; local briefing="$*"
@@ -757,8 +760,8 @@ cmd_lead(){
 
   # ─── Controls ───
   local max_rounds="${MAS_LEAD_MAX_ROUNDS:-10}"
-  local soft_timeout="${MAS_LEAD_SOFT_TIMEOUT:-180}"
-  local hard_timeout="${MAS_LEAD_HARD_TIMEOUT:-480}"
+  local soft_timeout="${MAS_LEAD_SOFT_TIMEOUT:-300}"
+  local hard_timeout="${MAS_LEAD_HARD_TIMEOUT:-900}"
   local escalate_agent="${MAS_LEAD_ESCALATE_AGENT:-bootstrap}"
   local stall_action="${MAS_LEAD_STALL_ACTION:-partial}"
   local escalate_name; escalate_name=$(get_agent_name "$escalate_agent")
