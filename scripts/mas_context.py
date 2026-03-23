@@ -196,7 +196,11 @@ Project: {project} | Session: {mas_session_id} | Exchanges: 0
         lines.append(f"[{ts}] {agent}")
         lines.append(f"  request: {req}...")
         if resp:
-            wrapped = textwrap.fill(resp[:2000], width=100, subsequent_indent='  ')
+            # Limit full response to prevent context overflow
+            content = resp[:1000] if len(resp) > 1000 else resp
+            wrapped = textwrap.fill(content, width=100, subsequent_indent='  ')
+            if len(resp) > 1000:
+                wrapped += "\n  [...truncated for context window]"
             lines.append(f"  FULL:\n{wrapped}")
         lines.append('')
     
@@ -221,7 +225,11 @@ Project: {project} | Session: {mas_session_id} | Exchanges: 0
             tokens = len(resp_text) // 4
             if tokens_used + tokens < TOKEN_BUDGET_RELEVANT:
                 lines.append(f"[HIGH - Score:{score}] {agent} ({ts})")
-                wrapped = textwrap.fill(resp_text[:1500], width=100, subsequent_indent='  ')
+                # Limit to prevent overflow
+                content = resp_text[:800] if len(resp_text) > 800 else resp_text
+                wrapped = textwrap.fill(content, width=100, subsequent_indent='  ')
+                if len(resp_text) > 800:
+                    wrapped += "\n  [...truncated]"
                 lines.append(f"  FULL:\n{wrapped}")
                 lines.append('')
                 tokens_used += tokens
