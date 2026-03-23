@@ -8,7 +8,7 @@
 
 set -u
 
-MAS_VERSION="4.2.2"
+MAS_VERSION="4.3.2"
 MAS_HUB="${HOME}/.openclaw/mas-hub"
 BLACKBOARD="${MAS_HUB}/blackboard"
 DB_FILE="${BLACKBOARD}/shared_context.db"
