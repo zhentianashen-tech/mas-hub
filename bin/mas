@@ -84,6 +84,7 @@ normalize_agent(){
     archie|@archie) echo "archie" ;;
     wang|@wang) echo "wang" ;;
     lynch|@lynch) echo "lynch" ;;
+    alonzo|@alonzo) echo "alonzo" ;;
     @*) echo "${1#@}" ;;
     *) echo "$1" ;;
   esac
@@ -404,8 +405,8 @@ PY
 # ─── Model switching ───
 agent_index_for_model(){
   # Indices from: openclaw config get agents.list
-  # 0=main(Archie) 1=work 2=wang 3=lynch 4=bootstrap
-  case "$1" in archie) echo 0 ;; wang) echo 2 ;; lynch) echo 3 ;; bootstrap) echo 4 ;; *) echo "" ;; esac
+  # 0=main(Archie) 1=work 2=wang 3=lynch 4=bootstrap 5=alonzo
+  case "$1" in archie) echo 0 ;; wang) echo 2 ;; lynch) echo 3 ;; bootstrap) echo 4 ;; alonzo) echo 5 ;; *) echo "" ;; esac
 }
 
 resolve_model_alias(){
@@ -458,7 +459,7 @@ set_model(){
 
 models_overview(){
   echo -e "${BOLD}Current agent models:${NC}"
-  for agent in archie wang lynch bootstrap; do
+  for agent in archie wang lynch alonzo bootstrap; do
     local idx; idx=$(agent_index_for_model "$agent")
     local path="agents.list[${idx}].model.primary"
     local model; model=$(openclaw config get "$path" 2>/dev/null)
@@ -1303,7 +1304,7 @@ PY
   # 7. Agent models
   echo ""
   echo -e "${BOLD}Agent models:${NC}"
-  for agent in archie wang lynch bootstrap; do
+  for agent in archie wang lynch alonzo bootstrap; do
     local idx; idx=$(agent_index_for_model "$agent")
     local path="agents.list[${idx}].model.primary"
     local model; model=$(openclaw config get "$path" 2>/dev/null)

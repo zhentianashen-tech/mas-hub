@@ -62,6 +62,22 @@
 - **Escalation Target:** Human operator (Alan)
 - **Model Profile:** Technical troubleshooting with system awareness
 
+### Alonzo (Tech Strategy Research)
+- **Role ID:** `agent_tech_strat_01`
+- **Primary Function:** Technical strategy analysis, competitive intelligence, deep-tech research
+- **Capabilities:**
+  - Bridge between technical feasibility and economic viability
+  - Deep-tech stack audits (AI/ML infrastructure, distributed systems)
+  - Competitive situational awareness and second-order thinking
+  - Strategic frameworks: Wardley Mapping, Jevons Paradox, Value Chain Analysis, OODA Loop
+  - Collaborates with Wang on capital constraints for Build/Buy decisions
+  - Collaborates with Archie on cross-domain research
+  - **Strict Memory Control:** MAS Hub memory separate from 5-layer workspace memory
+- **Authority Level:** Strategic advisor (provides technical perspective)
+- **Escalation Target:** Archie (strategic conflicts), Bootstrap (data access)
+- **Model Profile:** Strategic analysis with technical depth
+- **Memory Architecture:** 5-layer system (L1 bootstrap, L2 daily logs, L3 sessions, L4 knowledge base, L5 ontology)
+
 ---
 
 ## 2. Communication Protocols
