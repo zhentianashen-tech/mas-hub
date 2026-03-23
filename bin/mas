@@ -1469,7 +1469,7 @@ case "${1:-}" in
     shift 2
     [[ -z "${1:-}" ]] && { echo "Usage: mas lead @<agent> <briefing>"; exit 1; }
     cmd_lead "$lead_target" "$*" ;;
-  @archie|@wang|@lynch|@bootstrap|@bob) cmd="$1"; shift; send_to_agent "$cmd" "$*" ;;
+  @archie|@wang|@lynch|@alonzo|@bootstrap|@bob) cmd="$1"; shift; send_to_agent "$cmd" "$*" ;;
   @all) shift; broadcast "$*" ;;
   help|--help|-h) show_help ;;
   "") show_help ;;
