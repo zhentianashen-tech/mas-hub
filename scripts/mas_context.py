@@ -186,7 +186,7 @@ Project: {project} | Session: {mas_session_id} | Exchanges: 0
     lines.append('═══ MOST RECENT (Always Shown) ═══')
     lines.append('')
     
-    recent = list(reversed(scored))[:2]
+    recent = scored[:2]  # SQL returns DESC, so first 2 are newest
     for ex in recent:
         ts = ex.get('timestamp', '')[:16]
         agent = ex.get('agent', 'unknown')
