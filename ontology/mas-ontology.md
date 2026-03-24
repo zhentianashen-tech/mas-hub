@@ -62,6 +62,51 @@
 - **Escalation Target:** Human operator (Alan)
 - **Model Profile:** Technical troubleshooting with system awareness
 
+## Kimi Code CLI Integration (IT Maintenance Tool)
+
+**Tool ID:** `tool_it_maint_01`  
+**Type:** External CLI Tool (not an OpenClaw agent)  
+**Location:** `kimi` command (installed via uv)  
+**Version:** 1.23.0+  
+**Documentation:** https://moonshotai.github.io/kimi-cli/
+
+### Purpose
+Kimi Code CLI serves as the default IT maintenance automation tool for MAS Hub. It handles:
+- Routine maintenance tasks (log rotation, config validation, dependency updates)
+- Code fixes and refactoring in MAS Hub scripts
+- System health monitoring and preventive actions
+- Technical documentation updates
+- Git operations (commits, branches, PRs for maintenance changes)
+
+### Integration Pattern
+```
+Agent (Bootstrap/Archie) → MAS CLI → Kimi Code CLI → Execute Maintenance Task
+```
+
+### Usage Examples
+```bash
+# Interactive maintenance session
+kimi "Rotate logs older than 7 days in ~/.openclaw/mas-hub/logs/"
+
+# Non-interactive task execution
+kimi --print "Validate MAS Hub config.json and fix any JSON syntax errors"
+
+# Git maintenance operations
+kimi "Check git status in ~/Projects/mas-hub/, commit any config changes with message 'Maintenance: updated config'"
+```
+
+### Safety Constraints
+- **Non-destructive by default:** Uses `trash` over `rm`, creates backups before modifications
+- **Scope-limited:** Only operates within MAS Hub directories (`~/Projects/mas-hub/`, `~/.openclaw/mas-hub/`)
+- **Escalation:** Complex issues escalate to Bootstrap (human maintainer Bob)
+- **Logging:** All Kimi Code operations logged to `~/.openclaw/mas-hub/logs/kimi-maintenance.log`
+
+### Escalation Target
+Kimi Code escalates to **Bootstrap (Bob)** when:
+- Maintenance task requires human approval (destructive operations)
+- System-wide changes needed (OpenClaw config, agent models)
+- Unrecoverable errors detected (database corruption, missing critical files)
+
 ### Alonzo (Tech Strategy Research)
 - **Role ID:** `agent_tech_strat_01`
 - **Primary Function:** Technical strategy analysis, competitive intelligence, deep-tech research
@@ -203,7 +248,9 @@
 ```
 Agent Technical Failure
     ↓
-Bootstrap (Diagnosis & Remediation)
+Kimi Code CLI (Automated Maintenance & Fixes)
+    ↓
+If unresolved → Bootstrap (Diagnosis & Remediation)
     ↓
 If unresolved → Human Operator (Alan)
     ↓

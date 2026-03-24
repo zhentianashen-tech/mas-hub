@@ -65,5 +65,31 @@
     "inbox_format": "json",
     "max_message_size": "10MB",
     "ttl_hours": 48
+  },
+  
+  "maintenance": {
+    "tool": "kimi-code",
+    "tool_version": "1.23.0+",
+    "wrapper_script": "~/Projects/mas-hub/bin/kimi-maintenance",
+    "daily_script": "~/Projects/mas-hub/bin/kimi-daily-maintenance.sh",
+    "log_file": "~/.openclaw/mas-hub/logs/kimi-maintenance.log",
+    "schedule": {
+      "daily": "06:00",
+      "weekly": "Sunday 02:00"
+    },
+    "tasks": {
+      "daily": [
+        "System health check",
+        "Log rotation (7+ days)",
+        "Config validation",
+        "Inbox cleanup (48h+)"
+      ],
+      "weekly": [
+        "Workflow archival (30+ days)",
+        "Git maintenance",
+        "Dependency updates",
+        "Full system audit"
+      ]
+    }
   }
 }

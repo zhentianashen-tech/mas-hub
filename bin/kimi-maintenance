@@ -1,0 +1,170 @@
+#!/bin/bash
+# Kimi Code CLI Wrapper for MAS Hub Maintenance
+# Usage: kimi-maintenance <task-description>
+#
+# This script invokes Kimi Code CLI for IT maintenance tasks
+# with proper logging and safety constraints
+
+set -euo pipefail
+
+MAS_HUB="${HOME}/.openclaw/mas-hub"
+LOG_FILE="${MAS_HUB}/logs/kimi-maintenance.log"
+MAS_HUB_DIR="${HOME}/Projects/mas-hub"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+DIM='\033[2m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+log() {
+    local level="$1"; shift
+    printf '[%s] [%s] %s\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "$level" "$*" >> "$LOG_FILE"
+}
+
+usage() {
+    cat << EOF
+${BOLD}Kimi Code Maintenance Wrapper${NC}
+
+Usage: kimi-maintenance [OPTIONS] <task-description>
+
+Options:
+  -h, --help      Show this help message
+  -d, --dry-run   Show what would be executed without running
+  -v, --verbose   Enable verbose output
+  -l, --log       Show last 20 lines of maintenance log
+
+Examples:
+  kimi-maintenance "Rotate logs older than 7 days"
+  kimi-maintenance "Validate config.json and fix syntax errors"
+  kimi-maintenance "Check git status and commit any config changes"
+  kimi-maintenance --dry-run "Clean up old workflow archives"
+
+EOF
+}
+
+# Parse arguments
+DRY_RUN=0
+VERBOSE=0
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -d|--dry-run)
+            DRY_RUN=1
+            shift
+            ;;
+        -v|--verbose)
+            VERBOSE=1
+            shift
+            ;;
+        -l|--log)
+            if [[ -f "$LOG_FILE" ]]; then
+                tail -20 "$LOG_FILE"
+            else
+                echo "No maintenance log found."
+            fi
+            exit 0
+            ;;
+        -*)
+            echo -e "${RED}Unknown option: $1${NC}"
+            usage
+            exit 1
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+# Require task description
+if [[ $# -eq 0 ]]; then
+    echo -e "${RED}Error: Task description required${NC}"
+    usage
+    exit 1
+fi
+
+TASK="$*"
+
+# Ensure directories exist
+mkdir -p "${MAS_HUB}/logs"
+
+# Log the request
+log INFO "REQUEST: $TASK (dry_run=$DRY_RUN)"
+
+echo -e "${BLUE}🔧 Kimi Code Maintenance${NC}"
+echo -e "${DIM}Task: $TASK${NC}"
+echo ""
+
+if [[ $DRY_RUN -eq 1 ]]; then
+    echo -e "${YELLOW}[DRY RUN] Would execute:${NC}"
+    echo "  kimi --print \"$TASK\""
+    echo ""
+    echo -e "${DIM}Working directories:${NC}"
+    echo "  - MAS Hub: $MAS_HUB_DIR"
+    echo "  - Runtime: $MAS_HUB"
+    exit 0
+fi
+
+# Execute Kimi Code with context about MAS Hub
+echo -e "${GREEN}Executing maintenance task...${NC}"
+echo ""
+
+# Create a temporary instruction file with context
+TEMP_INSTRUCTION=$(mktemp)
+cat > "$TEMP_INSTRUCTION" << EOF
+You are performing IT maintenance for MAS Hub (Multi-Agent System).
+
+## Context
+- MAS Hub Source: ~/Projects/mas-hub/
+- MAS Hub Runtime: ~/.openclaw/mas-hub/
+- You are invoked via the kimi-maintenance wrapper script
+
+## Safety Rules
+1. Use \`trash\` instead of \`rm\` for deletions
+2. Create backups before modifying config files
+3. Only operate within MAS Hub directories
+4. Log all changes to ~/.openclaw/mas-hub/logs/kimi-maintenance.log
+5. Escalate complex issues by reporting them clearly
+
+## Task
+$TASK
+
+## Output Format
+- Describe what you're doing before each action
+- Show command output (trimmed if very long)
+- Report any errors or concerns
+- Summarize changes made at the end
+EOF
+
+# Run Kimi Code in print mode (non-interactive)
+# Feed the instruction via stdin since --file doesn't exist
+if [[ $VERBOSE -eq 1 ]]; then
+    cat "$TEMP_INSTRUCTION" | kimi --print
+else
+    cat "$TEMP_INSTRUCTION" | kimi --print 2>&1 | tee -a "$LOG_FILE"
+fi
+
+EXIT_CODE=${PIPESTATUS[0]}
+
+# Clean up
+rm -f "$TEMP_INSTRUCTION"
+
+# Log completion
+if [[ $EXIT_CODE -eq 0 ]]; then
+    log INFO "COMPLETED: Success"
+    echo ""
+    echo -e "${GREEN}✓ Maintenance task completed${NC}"
+else
+    log ERROR "COMPLETED: Failed with exit code $EXIT_CODE"
+    echo ""
+    echo -e "${RED}✗ Maintenance task failed (exit code: $EXIT_CODE)${NC}"
+    echo -e "${DIM}Check log: $LOG_FILE${NC}"
+fi
+
+exit $EXIT_CODE

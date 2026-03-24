@@ -318,10 +318,15 @@ try:
     data = json.loads(raw)
 except json.JSONDecodeError as e:
     print(json.dumps({'_error': True, '_stage': 'json_parse', '_msg': f'Invalid JSON: {e}', '_raw_head': raw[:200]})); sys.exit(0)
-if data.get('status') != 'ok':
+# Support both old format {"status":"ok","result":{"payloads":[...]}} and new format {"payloads":[...],"meta":{...}}
+if 'payloads' in data and 'status' not in data:
+    # New openclaw agent --json format: payloads at top level
+    payloads = data.get('payloads') or []
+elif data.get('status') == 'ok':
+    result = data.get('result') or {}
+    payloads = result.get('payloads') or []
+else:
     print(json.dumps({'_error': True, '_stage': 'agent_status', '_msg': f"Agent returned status={data.get('status')}", '_detail': data.get('error', '')})); sys.exit(0)
-result = data.get('result') or {}
-payloads = result.get('payloads') or []
 texts = [p.get('text','').strip() for p in payloads if isinstance(p, dict) and p.get('text') and p.get('text').strip()]
 if not texts:
     print(json.dumps({'_error': True, '_stage': 'empty_payload', '_msg': 'No non-empty text payloads', '_payloads': len(payloads)})); sys.exit(0)
@@ -349,7 +354,8 @@ for line in paragraphs:
     if any(tok in line.lower() for tok in ['attached','artifact','file:','.pdf','.csv','.xlsx','.md']):
         artifacts.append(textwrap.shorten(line, width=180, placeholder='...'))
     if len(artifacts) >= 5: break
-meta = (((data.get('result') or {}).get('meta') or {}).get('agentMeta') or {})
+# Support both old format (result.meta.agentMeta) and new format (meta.agentMeta)
+meta = (((data.get('result') or {}).get('meta') or {}).get('agentMeta') or {}) or ((data.get('meta') or {}).get('agentMeta') or {})
 print(json.dumps({'text':text,'summary':summary,'key_points':key_points,'open_questions':open_questions,'citations':citations,'artifacts':artifacts,'agent_session_id':meta.get('sessionId',''),'provider':meta.get('provider',''),'model':meta.get('model','')}, ensure_ascii=False))
 PY
 }
