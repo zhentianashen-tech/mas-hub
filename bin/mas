@@ -787,6 +787,14 @@ cmd_lead(){
   echo -e "${BOLD}${CYAN}║           MAS Lead Mode v2 — $lead_name directing              ${NC}"
   echo -e "${BOLD}${CYAN}╚═══════════════════════════════════════════════════════════════╝${NC}"
   echo -e "Project: ${BOLD}$CURRENT_PROJECT${NC} | Max rounds: $max_rounds"
+
+  # ─── Load project memory if exists ───
+  local project_memory=""
+  local proj_mem_file="${MAS_HUB}/projects/${CURRENT_PROJECT}/memory.md"
+  if [[ -f "$proj_mem_file" ]]; then
+    project_memory=$(cat "$proj_mem_file")
+    echo -e "${DIM}📋 Loaded project memory (${proj_mem_file})${NC}"
+  fi
   echo -e "Timeouts: soft=${soft_timeout}s hard=${hard_timeout}s | Escalate→${BOLD}$escalate_name${NC} | Stall→$stall_action"
   echo ""
 
@@ -953,7 +961,7 @@ TIMEOUT HANDLING:
 - If an agent times out or fails, you will receive a timeout/error report
 - You may: reassign the task to another agent, proceed with partial data, or skip
 - Use [TASK:bootstrap] to investigate infrastructure issues
-- You can write [DONE] with partial findings if enough evidence exists
+- DO NOT write [DONE] on your own — only when user explicitly requests final synthesis
 
 STAGE GATE — DO NOT STOP PREMATURELY:
 This project follows a MANDATORY 5-stage research protocol:
@@ -969,6 +977,14 @@ CRITICAL RULES:
 - Only write [DONE] after: Wang completes research → Lynch audits → You synthesize
 - If unsure whether to continue, ALWAYS lean toward more research, not less
 
+PROJECT LIFECYCLE — ABSOLUTE RULES:
+- Projects are NEVER complete until the USER explicitly closes them
+- NEVER claim a project is "done" or "complete" based on your own assessment
+- NEVER say "nothing left to do" — always ask the user before wrapping up
+- If an agent is slow or unresponsive, WAIT or ESCALATE to Bootstrap — do not close the project
+- The USER, not you, decides when a project is finished
+- [DONE] is reserved for when the user explicitly asks for final synthesis
+
 STALL POLICY: If multiple agents stall, synthesize what you have and note gaps explicitly.
 
 RULES:
@@ -982,6 +998,9 @@ RULES:
 BRIEFING: $briefing"
 
   local lead_message="$lead_prompt"
+  if [[ -n "$project_memory" ]]; then
+    lead_message="${lead_message}\n\nPROJECT MEMORY (read from disk):\n${project_memory}\n--- END PROJECT MEMORY ---"
+  fi
   local task_results=""
 
   while [[ $round -lt $max_rounds ]]; do
