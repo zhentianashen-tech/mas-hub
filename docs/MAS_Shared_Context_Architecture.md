@@ -256,7 +256,7 @@ The context is prepended to each message as text, so there's no session lock con
 
 | File | Purpose |
 |------|---------|
-| `~/.kimi/bin/mas` | Main MAS CLI (v3.1) |
+| `~/Projects/mas-hub/bin/mas` | Main MAS CLI (v3.1) |
 | `~/.openclaw/mas-hub/blackboard/shared_context.json` | Shared context storage |
 | `~/.openclaw/mas-hub/agent-memories/` | Individual agent daily memories |
 

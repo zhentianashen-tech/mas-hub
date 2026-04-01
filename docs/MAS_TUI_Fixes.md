@@ -97,8 +97,8 @@ Each file contains the OpenClaw session ID for that agent.
 
 | File | Change |
 |------|--------|
-| `~/.kimi/bin/mas` | Complete rewrite with session support |
-| `~/.kimi/bin/mas-tui` | New TUI wrapper script |
+| `~/Projects/mas-hub/bin/mas` | Complete rewrite with session support |
+| `~/Projects/mas-hub/bin/mas-tui` | New TUI wrapper script |
 | `~/.openclaw/workspace-bootstrap/MAS_SESSIONS.md` | New session documentation |
 
 ---

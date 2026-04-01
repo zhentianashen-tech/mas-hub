@@ -1,4 +1,38 @@
+# Backup files
 *.bak
 *.bak.*
+*.broken
+*.backup
+
+# Python
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Runtime data (never commit user data)
+~/.openclaw/mas-hub/
+
+# Logs
+*.log
+logs/
+
+# State files
+state.json
+agent-memories/
+
+# Lock files
+*.lock
+blackboard/.lock/

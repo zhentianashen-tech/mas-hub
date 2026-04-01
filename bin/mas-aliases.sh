@@ -1,6 +1,6 @@
 #!/bin/sh
 # MAS Model Switcher Aliases
-# Source this file: source ~/.kimi/bin/mas-aliases.sh
+# Source this file: source ~/Projects/mas-hub/bin/mas-aliases.sh
 
 # Wang model switcher
 wang-model() { openclaw config get agents.list[2].model.primary; }

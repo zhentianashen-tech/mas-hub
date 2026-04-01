@@ -373,8 +373,8 @@ Tesla's Q3 2026 revenue is $25.5B (validated from SEC 10-K filing)...
 ### Command Not Found
 
 ```bash
-# Ensure ~/.kimi/bin is in PATH
-export PATH="$HOME/.kimi/bin:$PATH"
+# Ensure ~/Projects/mas-hub/bin is in PATH
+export PATH="$HOME/Projects/mas-hub/bin:$PATH"
 
 # Or source your zshrc
 source ~/.zshrc

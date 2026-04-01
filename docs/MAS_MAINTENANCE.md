@@ -56,8 +56,8 @@ User → mas CLI → Agent Pool
 mkdir -p ~/.openclaw/mas-hub/{inbox/{archie,wang,lynch,bootstrap},outbox,blackboard,workflows,logs,templates}
 
 # Make scripts executable
-chmod +x ~/.kimi/bin/mas
-chmod +x ~/.kimi/bin/mas-monitor
+chmod +x ~/Projects/mas-hub/bin/mas
+chmod +x ~/Projects/mas-hub/bin/mas-monitor
 
 # Verify installation
 mas help
@@ -183,7 +183,7 @@ openclaw agent --agent <id> --message "test" --json
 
 ```bash
 # Add to PATH
-export PATH="$HOME/.kimi/bin:$PATH"
+export PATH="$HOME/Projects/mas-hub/bin:$PATH"
 source ~/.zshrc
 ```
 

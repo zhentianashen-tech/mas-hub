@@ -39,7 +39,7 @@
     ├── workflow.yaml
     └── debate.yaml
 
-~/.kimi/bin/
+~/Projects/mas-hub/bin/
 ├── mas                      # Main orchestrator CLI
 └── mas-monitor              # Background monitor
 
