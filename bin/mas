@@ -8,8 +8,9 @@
 
 set -u
 
-MAS_VERSION="4.3.4"
+MAS_VERSION="4.3.6"
 MAS_HUB="${HOME}/.openclaw/mas-hub"
+MAS_HUB_SRC="${HOME}/Projects/mas-hub"
 BLACKBOARD="${MAS_HUB}/blackboard"
 DB_FILE="${BLACKBOARD}/shared_context.db"
 LOCK_DIR="${BLACKBOARD}/.lock"
@@ -301,7 +302,7 @@ PY
 get_context_for_agent(){
   local mas_session_id="$1" mode="${2:-text}"
   # Use adaptive context assembly with relevance scoring
-  python3 /tmp/mas_context.py "$DB_FILE" "$mas_session_id" "$CURRENT_PROJECT" "$mode"
+  python3 "${MAS_HUB_SRC}/scripts/mas_context.py" "$DB_FILE" "$mas_session_id" "$CURRENT_PROJECT" "$mode"
 }
 
 
@@ -992,8 +993,9 @@ RULES:
 - After receiving agent responses, analyze them before issuing more tasks
 - Flag conflicts between agents explicitly
 - Aim for thoroughness but don't loop unnecessarily
-- You MUST use [TASK:agent] or [DONE] in every response
+- You MUST use [TASK:agent] blocks to continue work — [DONE] is ONLY for final synthesis when explicitly requested
 - Mark missing evidence clearly with [MISSING: description]
+- ⚠️ PREMATURE [DONE] DETECTION: If you write [DONE] before all stages complete or without user request, the system will reject it and continue the session
 
 BRIEFING: $briefing"
 
@@ -1063,8 +1065,21 @@ If any agent timed out or failed, decide: reassign, proceed with partial data, o
     lead_text=$(cat "$MAS_LEAD_RESPONSE_FILE")
     rm -f "$MAS_LEAD_RESPONSE_FILE"
 
-    # Check for [DONE]
+    # Check for [DONE] — with premature detection
     if echo "$lead_text" | grep -q '\[DONE\]'; then
+      # Check if [DONE] is premature (early rounds, no audit, etc.)
+      if [[ $round -lt 5 ]] || [[ $total_tasks_completed -lt 3 ]]; then
+        echo -e "${YELLOW}⚠ WARNING: $lead_name attempted premature [DONE]${NC}"
+        echo -e "${DIM}Round: $round (min recommended: 5) | Tasks: $total_tasks_completed (min: 3)${NC}"
+        echo -e "${YELLOW}→ Continuing session. Archie has been nudged to continue working.${NC}"
+        echo ""
+        
+        # Nudge lead agent to continue
+        lead_message="You attempted to write [DONE] too early. The project is NOT complete. Continue working through all 5 stages. Issue more [TASK:agent] blocks to complete the research. Do NOT write [DONE] until all stages are complete and user explicitly requests it."
+        log WARN "stage=premature_done_detected lead=$lead_agent round=$round tasks=$total_tasks_completed"
+        continue
+      fi
+      
       echo -e "${GREEN}${BOLD}═══ $lead_name concluded the research ═══${NC}"
       echo ""
       echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
