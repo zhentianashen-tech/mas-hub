@@ -125,7 +125,48 @@ Kimi Code escalates to **Bootstrap (Bob)** when:
 
 ---
 
-## 2. Communication Protocols
+## 2. Research Quality Standard
+
+**Effective 2026-04-19:** All research must meet the 5-Layer Thoroughness Standard.
+
+### The Standard
+
+When analyzing investment signals, answer questions at this depth:
+
+> *"Which kind of fertilizers are being impacted right now, what kind of crops up and down the chain are negatively influenced by that squeeze, where are they grown, when do they need water the most (down to weeks, even days), which areas, how are the irrigation infra, what kind of liquidity levels are available in those areas... these are real questions that influence investment decisions."*
+
+### 5-Layer Analysis
+
+| Layer | Scope | Example Questions |
+|-------|-------|-------------------|
+| **1. Direct Impact** | Specific products, quantified effects | Which fertilizers? By how much? Current vs baseline? |
+| **2. Supply Chain** | Upstream → midstream → downstream | Natural gas → ammonia → urea. Who makes what? Where? |
+| **3. Geography & Timing** | Regions, timing precision | Which counties? Planting windows? Critical days? |
+| **4. Financial/Liquidity** | Credit, markets, hedging | Farm debt? Crop insurance? Futures liquidity? |
+| **5. Second-Order Effects** | Substitution, competition, policy | Who benefits? Alternative crops? Government response? |
+
+### Task Template
+
+Archie must include in research tasks:
+```
+Use 5-layer analysis. Be specific on geography, timing, and quantification.
+Flag any [MISSING:] data explicitly. See docs/RESEARCH-STANDARD.md
+```
+
+### Audit Requirement
+
+Lynch must verify:
+- [ ] Can I trade on this? (Specific tickers, entry/exit, sizing)
+- [ ] Geography/timing precise enough?
+- [ ] All 5 layers addressed?
+- [ ] Multiple independent sources?
+- [ ] Liquidity/execution confirmed?
+
+**See full specification:** `~/Projects/mas-hub/docs/RESEARCH-STANDARD.md`
+
+---
+
+## 3. Communication Protocols
 
 ### Task Delegation
 ```
@@ -169,7 +210,7 @@ Kimi Code escalates to **Bootstrap (Bob)** when:
 
 ---
 
-## 3. Memory Architecture
+## 4. Memory Architecture
 
 ### MAS Hub Memory (Project-Scoped)
 - **Location:** `~/.openclaw/mas-hub/agent-memories/{agent}_{YYYY-MM-DD}.md`
@@ -198,7 +239,7 @@ Kimi Code escalates to **Bootstrap (Bob)** when:
 
 ---
 
-## 4. Project Lifecycle
+## 5. Project Lifecycle
 
 ### Phase 1: Briefing
 - **Trigger:** `mas new <project>` or `mas lead @<agent> "<brief>"`
@@ -243,7 +284,7 @@ Kimi Code escalates to **Bootstrap (Bob)** when:
 
 ---
 
-## 5. Escalation Chain
+## 6. Escalation Chain
 
 ```
 Agent Technical Failure
@@ -274,7 +315,7 @@ If systemic → MAS Hub Maintenance (Bob)
 
 ---
 
-## 6. Watchdog Parameters
+## 7. Watchdog Parameters
 
 ### Timeout Configuration
 | Parameter | Default | Description |
@@ -304,7 +345,7 @@ Rounds: {n} | Tasks: {dispatched} dispatched, {completed} completed, {failed} fa
 
 ---
 
-## 7. Directory Structure
+## 8. Directory Structure
 
 ```
 ~/Projects/mas-hub/              # Project source (git repo)
@@ -338,7 +379,7 @@ Rounds: {n} | Tasks: {dispatched} dispatched, {completed} completed, {failed} fa
 
 ---
 
-## 8. Glossary
+## 9. Glossary
 
 | Term | Definition |
 |------|------------|
@@ -353,7 +394,7 @@ Rounds: {n} | Tasks: {dispatched} dispatched, {completed} completed, {failed} fa
 
 ---
 
-## 9. Version History
+## 10. Version History
 
 | Version | Date | Changes |
 |---------|------|---------|
