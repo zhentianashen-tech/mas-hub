@@ -1,5 +1,5 @@
 #!/bin/bash
-# MAS TUI Wrapper - For use inside OpenClaw TUI
+# MAS TUI Wrapper - For use inside Hermes TUI
 # Usage: mas-tui <agent> <message>
 # Resolves mas from the same directory as this script.
 
@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MAS_BIN="${SCRIPT_DIR}/mas"
 
 export TUI_MODE=1
-export MAS_HUB="${HOME}/.openclaw/mas-hub"
+export MAS_HUB="${HOME}/.hermes/mas-hub"
 
 agent=$1
 shift

@@ -1,35 +1,38 @@
 # MAS Hub — System Requirements
 
-**Version:** 1.0.0  
-**Last Updated:** 2026-04-01
+**Version:** 1.1.0  
+**Last Updated:** 2026-04-19
 
 ---
 
 ## Core Dependencies
 
-### 1. OpenClaw CLI (Required)
+### 1. Hermes Agent (Required)
 
-**Minimum Version:** `2026.3.12`  
+**Minimum Version:** `0.10.0`  
 **Recommended:** Latest stable release
 
 **Installation:**
 ```bash
-# Install via npm (if not already installed)
-npm install -g openclaw
+# Install via uv (recommended)
+git clone https://github.com/NousResearch/hermes-agent.git
+cd hermes-agent
+uv venv venv --python 3.11
+source venv/bin/activate
+uv pip install -e ".[all]"
 
 # Verify installation
-openclaw --version
+hermes version
 ```
 
 **Configuration:**
-MAS Hub requires OpenClaw to be configured with:
-- Gateway daemon running (`openclaw gateway status`)
-- At least one agent configured in `~/.openclaw/openclaw.json`
-- Valid API keys for your chosen models
+MAS Hub requires Hermes to be configured with:
+- Valid API keys in `~/.hermes/.env` (e.g., `OPENROUTER_API_KEY`)
+- Hermes profiles created for each agent (done automatically by `install.sh`)
 
-**Check OpenClaw Health:**
+**Check Hermes Health:**
 ```bash
-openclaw health
+hermes doctor
 ```
 
 ---
@@ -132,21 +135,21 @@ git --version
 
 ## Model Requirements
 
-MAS Hub supports any model available through OpenClaw. Recommended configurations:
+MAS Hub supports any model available through Hermes Agent (OpenRouter, Anthropic, OpenAI, Ollama, etc.). Recommended configurations:
 
 | Agent | Recommended Model | Purpose |
 |-------|------------------|---------|
-| **Archie** (Facilitator) | `minimax/MiniMax-M2.7` or `moonshot/kimi-k2.5` | Strong reasoning, task orchestration |
-| **Wang** (Researcher) | `zenmux/anthropic/claude-opus-4.6` or `minimax/MiniMax-M2.7` | Deep research, financial analysis |
-| **Lynch** (Auditor) | `zenmux/z-ai/glm-5-turbo` or `zenmux/openai/gpt-4.1-mini` | Detail-oriented validation |
-| **Bootstrap** (Maintainer) | `zenmux/qwen/qwen3.5-plus` | Technical troubleshooting |
+| **Archie** (Facilitator) | `qwen/qwen3.6-plus` or `moonshot/kimi-k2.5` | Strong reasoning, task orchestration |
+| **Wang** (Researcher) | `anthropic/claude-opus-4` or `anthropic/claude-opus-4.6` | Deep research, financial analysis |
+| **Lynch** (Auditor) | `openai/gpt-4.1-mini` or `z-ai/glm-5-turbo` | Detail-oriented validation |
+| **Bootstrap** (Maintainer) | `qwen/qwen3.5-plus` | Technical troubleshooting |
 | **Alonzo** (Tech Strategy) | `minimax/MiniMax-M2.7` | Strategic technical analysis |
 
 **Model Aliases:** MAS Hub includes built-in aliases for common models:
-- `claude-opus-4.6` → `zenmux/anthropic/claude-opus-4.6`
-- `gpt-5.4` → `zenmux/openai/gpt-5.4`
-- `qwen-3.5-plus` → `zenmux/qwen/qwen3.5-plus`
-- `glm-5-turbo` → `zenmux/z-ai/glm-5-turbo`
+- `claude-opus-4.6` → `anthropic/claude-opus-4.6`
+- `gpt-5.4` → `openai/gpt-5.4`
+- `qwen-3.5-plus` → `qwen/qwen3.5-plus`
+- `glm-5-turbo` → `z-ai/glm-5-turbo`
 - And 10+ more (see `mas help`)
 
 ---
@@ -171,9 +174,9 @@ MAS Hub supports any model available through OpenClaw. Recommended configuration
 
 ### Network
 
-- Required for agent model API calls (via OpenClaw Gateway)
+- Required for agent model API calls (via Hermes Agent / OpenRouter)
 - No direct external API calls from MAS Hub itself
-- All model traffic routed through OpenClaw Gateway
+- All model traffic routed through Hermes Agent
 
 ---
 
@@ -182,26 +185,29 @@ MAS Hub supports any model available through OpenClaw. Recommended configuration
 MAS Hub expects the following layout:
 
 ```
-~/Projects/mas-hub/              # Project source (git repo)
+~/project/mas-hub/               # Project source (git repo)
   bin/
     mas                          # Main MAS CLI
     mas-tui                      # TUI wrapper
-    kimi-maintenance             # Kimi Code wrapper
-    kimi-daily-maintenance.sh    # Daily maintenance script
+    mas-monitor                  # Background conflict monitor
   ontology/
     mas-ontology.md              # Agent roles & protocols
   scripts/
     context_maintenance.py       # Adaptive context assembly
     mas_context.py               # Context retrieval
     read_pdf.py                  # PDF reading utility
+  agents/                        # Agent template configs (SOUL.md etc.)
   docs/                          # Documentation
-  templates/                     # Message templates
+  templates/                     # Domain stage gate templates
   config.json                    # Reference configuration
-  README.md                      # This file
-  REQUIREMENTS.md                # System requirements
   install.sh                     # Installation script
 
-~/.openclaw/mas-hub/             # Runtime data (auto-created)
+~/.hermes/profiles/<agent>/      # Per-agent Hermes profiles
+  config.yaml                    # Agent model and settings
+  SOUL.md                        # Agent personality
+  sessions/                      # Agent session history
+
+~/.hermes/mas-hub/               # Runtime data (auto-created)
   blackboard/shared_context.db   # SQLite blackboard
   agent-memories/                # Daily MAS memory files
   logs/                          # Orchestrator logs
@@ -216,9 +222,9 @@ MAS Hub expects the following layout:
 
 Before installing MAS Hub, verify:
 
-- [ ] OpenClaw CLI installed and configured (`openclaw --version`)
-- [ ] OpenClaw Gateway running (`openclaw health`)
-- [ ] At least one agent configured in OpenClaw
+- [ ] Hermes Agent CLI installed (`hermes version`)
+- [ ] API keys configured in `~/.hermes/.env` (e.g., `OPENROUTER_API_KEY`)
+- [ ] Hermes profiles will be created by installer
 - [ ] Python 3.8+ available (`python3 --version`)
 - [ ] Bash shell available (`bash --version`)
 - [ ] SQLite3 available (`sqlite3 --version`)
@@ -229,11 +235,12 @@ Before installing MAS Hub, verify:
 
 ## Troubleshooting
 
-### "openclaw: command not found"
+### "hermes: command not found"
 
-**Solution:** Install OpenClaw CLI:
+**Solution:** Install Hermes Agent:
 ```bash
-npm install -g openclaw
+git clone https://github.com/NousResearch/hermes-agent.git
+cd hermes-agent && uv pip install -e ".[all]"
 ```
 
 ### "python3: command not found"
@@ -248,11 +255,12 @@ npm install -g openclaw
 - **macOS:** Pre-installed
 - **Linux:** `sudo apt install sqlite3` or `sudo dnf install sqlite3`
 
-### "Gateway not responding"
+### Agent not responding
 
-**Solution:** Start OpenClaw Gateway:
+**Solution:** Check Hermes profile and API keys:
 ```bash
-openclaw gateway start
+hermes doctor
+hermes -p wang chat -q "test" -Q
 ```
 
 ### Agent model unavailable
@@ -267,12 +275,11 @@ mas model <agent> set <alias>
 
 ## Support
 
-- **Documentation:** `~/Projects/mas-hub/docs/`
-- **Ontology:** `~/Projects/mas-hub/ontology/mas-ontology.md`
-- **Incident Reports:** `~/Projects/mas-hub/docs/incident-*.md`
-- **GitHub:** (TBD — release repo)
-- **Discord:** https://discord.com/invite/clawd
+- **Documentation:** `~/project/mas-hub/docs/`
+- **Ontology:** `~/project/mas-hub/ontology/mas-ontology.md`
+- **Incident Reports:** `~/project/mas-hub/docs/incident-*.md`
+- **GitHub:** https://github.com/zhentianashen-tech/mas-hub
 
 ---
 
-*MAS Hub is designed to be lightweight and dependency-minimal. If you have OpenClaw running, you likely already meet all requirements.*
+*MAS Hub is designed to be lightweight and dependency-minimal. If you have Hermes Agent running, you likely already meet all requirements.*

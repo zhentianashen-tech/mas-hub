@@ -3,7 +3,7 @@
 **Version:** 4.4.0
 **License:** MIT
 
-MAS Hub is a CLI-based multi-agent orchestration layer built on top of [OpenClaw](https://openclaw.ai). It coordinates multiple named AI agents around a shared SQLite context, with support for autonomous multi-round research sessions, domain-aware stage gates, and structured output persistence.
+MAS Hub is a CLI-based multi-agent orchestration layer backed by [Hermes Agent](https://github.com/NousResearch/hermes-agent). It coordinates multiple named AI agents around a shared SQLite context, with support for autonomous multi-round research sessions, domain-aware stage gates, and structured output persistence.
 
 ---
 
@@ -22,7 +22,7 @@ MAS Hub is a CLI-based multi-agent orchestration layer built on top of [OpenClaw
 
 ## Requirements
 
-- **OpenClaw CLI** ≥ 2026.3.12
+- **Hermes Agent CLI** (v0.10.0+)
 - **Python 3.8+** (stdlib only)
 - **Bash 3.2+**
 - **SQLite3**
@@ -32,11 +32,11 @@ MAS Hub is a CLI-based multi-agent orchestration layer built on top of [OpenClaw
 ## Installation
 
 ```bash
-git clone https://github.com/zhentianashen-tech/mas-hub.git ~/Projects/mas-hub
-cd ~/Projects/mas-hub && ./install.sh
+git clone https://github.com/zhentianashen-tech/mas-hub.git ~/project/mas-hub
+cd ~/project/mas-hub && ./install.sh
 ```
 
-This symlinks `bin/mas` and `bin/mas-tui` into `~/bin/`.
+This creates Hermes profiles for each agent, sets up runtime directories, and symlinks `bin/mas` and `bin/mas-tui` into `~/bin/`.
 
 ---
 
@@ -108,15 +108,15 @@ mas ping wang
 
 | Alias | Model |
 |-------|-------|
-| `claude-opus-4` | `zenmux/anthropic/claude-opus-4` |
-| `claude-opus-4.6` | `zenmux/anthropic/claude-opus-4.6` |
-| `claude-sonnet-4.6` | `zenmux/anthropic/claude-sonnet-4-6` |
-| `gpt-4.1-mini` | `zenmux/openai/gpt-4.1-mini` |
-| `gpt-5.4` | `zenmux/openai/gpt-5.4` |
-| `qwen-3.5-plus` | `zenmux/qwen/qwen3.5-plus` |
-| `glm-5-turbo` | `zenmux/z-ai/glm-5-turbo` |
-| `doubao-seed` | `zenmux/volcengine/doubao-seed-2.0-pro` |
-| `grok-4.2` | `zenmux/x-ai/grok-4.2-fast` |
+| `claude-opus-4` | `anthropic/claude-opus-4` |
+| `claude-opus-4.6` | `anthropic/claude-opus-4.6` |
+| `claude-sonnet-4.6` | `anthropic/claude-sonnet-4-6` |
+| `gpt-4.1-mini` | `openai/gpt-4.1-mini` |
+| `gpt-5.4` | `openai/gpt-5.4` |
+| `qwen-3.5-plus` | `qwen/qwen3.5-plus` |
+| `glm-5-turbo` | `z-ai/glm-5-turbo` |
+| `doubao-seed` | `volcengine/doubao-seed-2.0-pro` |
+| `grok-4.2` | `x-ai/grok-4.2-fast` |
 | `kimi` | `moonshot/kimi-k2.5` |
 | `minimax` | `minimax/MiniMax-M2.7` |
 | `local-qwen` | `ollama/qwen3.5:9b` |
@@ -128,13 +128,13 @@ mas ping wang
 
 | Agent | Role | Default Model |
 |-------|------|---------------|
-| `archie` | Facilitator / Lead | `moonshot/kimi-k2.5` |
-| `wang` | Financial Researcher | `zenmux/anthropic/claude-opus-4` |
-| `lynch` | Auditor / Validator | `zenmux/openai/gpt-4.1-mini` |
-| `bootstrap` | IT Maintainer | `zenmux/qwen/qwen3.5-plus` |
+| `archie` | Facilitator / Lead | `qwen/qwen3.6-plus` |
+| `wang` | Financial Researcher | `anthropic/claude-opus-4` |
+| `lynch` | Auditor / Validator | `openai/gpt-4.1-mini` |
+| `bootstrap` | IT Maintainer | `qwen/qwen3.5-plus` |
 | `alonzo` | Tech Strategy | `minimax/MiniMax-M2.7` |
 
-Sample workspace configs for all agents are in [`agents/`](agents/). Copy them into your OpenClaw workspaces as a starting point.
+Each agent runs as an isolated Hermes profile (`~/.hermes/profiles/<agent>/`). Sample workspace configs for all agents are in [`agents/`](agents/).
 
 ---
 
@@ -173,10 +173,10 @@ Agents use structured markers in responses:
 
 ## Runtime Data
 
-All runtime data lives at `~/.openclaw/mas-hub/` (not in this repo):
+All runtime data lives at `~/.hermes/mas-hub/` (not in this repo):
 
 ```
-~/.openclaw/mas-hub/
+~/.hermes/mas-hub/
 ├── blackboard/shared_context.db   # SQLite — exchanges, sessions, meta
 ├── state.json                     # Current project, session ID, domain
 ├── config.json                    # Live agent config
@@ -230,12 +230,13 @@ mas model wang set gpt-4.1-mini
 
 **Stale lock**
 ```bash
-rmdir ~/.openclaw/mas-hub/blackboard/.lock
+rmdir ~/.hermes/mas-hub/blackboard/.lock
 ```
 
-**Gateway not running**
+**Hermes not responding**
 ```bash
-openclaw gateway start
+hermes doctor
+hermes -p wang chat -q "test" -Q
 ```
 
 ---
