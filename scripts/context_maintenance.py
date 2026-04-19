@@ -33,7 +33,7 @@ from typing import Optional
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-MAS_HUB_ROOT = Path.home() / ".openclaw" / "mas-hub"
+MAS_HUB_ROOT = Path.home() / ".hermes" / "mas-hub"
 DB_FILE = MAS_HUB_ROOT / "blackboard" / "shared_context.db"
 PROJECTS_DIR = MAS_HUB_ROOT / "projects"
 

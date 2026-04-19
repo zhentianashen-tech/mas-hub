@@ -1,16 +1,17 @@
 #!/bin/bash
-# MAS (Multi-Agent System) Orchestrator v4.3.2
+# MAS (Multi-Agent System) Orchestrator v4.4.0
 # Project-scoped shared context + per-agent MAS sessions + diagnostics
 # Features: Adaptive context, Stage Gate, Context Maintenance System
 #
-# Runtime data lives in: ~/.openclaw/mas-hub/
-# Project source lives in: ~/Projects/mas-hub/
+# Backend: Hermes Agent (profiles per agent)
+# Runtime data lives in: ~/.hermes/mas-hub/
+# Project source lives in: ~/project/mas-hub/
 
 set -u
 
-MAS_VERSION="4.3.6"
-MAS_HUB="${HOME}/.openclaw/mas-hub"
-MAS_HUB_SRC="${HOME}/Projects/mas-hub"
+MAS_VERSION="4.4.0"
+MAS_HUB="${HOME}/.hermes/mas-hub"
+MAS_HUB_SRC="${HOME}/project/mas-hub"
 BLACKBOARD="${MAS_HUB}/blackboard"
 DB_FILE="${BLACKBOARD}/shared_context.db"
 LOCK_DIR="${BLACKBOARD}/.lock"
@@ -121,13 +122,101 @@ acquire_lock(){
           continue
         fi
       fi
-      emit_error "lock_timeout" "Timed out waiting for MAS blackboard lock" "Run: rmdir ~/.openclaw/mas-hub/blackboard/.lock"
+      emit_error "lock_timeout" "Timed out waiting for MAS blackboard lock" "Run: rmdir ~/.hermes/mas-hub/blackboard/.lock"
       return 1
     fi
   done
 }
 
 release_lock(){ rmdir "$LOCK_DIR" 2>/dev/null || true; }
+
+# ─── Hermes Agent Interface ───
+# Maps agent name to Hermes profile and calls hermes CLI
+# Uses background process + kill for timeout (macOS has no GNU timeout)
+hermes_agent_call(){
+  local profile="$1" message_file="$2" output_file="$3" err_file="$4" timeout_val="$5"
+  local session_flag=""
+
+  # Look up last Hermes session for this agent+project for continuity
+  local hermes_sid
+  hermes_sid=$(get_hermes_session "$profile")
+  [[ -n "$hermes_sid" ]] && session_flag="-r $hermes_sid"
+
+  # Read message from file to avoid shell quoting issues
+  local message
+  message=$(cat "$message_file")
+
+  # Call Hermes in quiet mode (-Q): stdout=response text, stderr=session info
+  # Use background + wait for macOS compatibility (no GNU timeout)
+  hermes -p "$profile" chat -q "$message" -Q $session_flag --max-turns 30 \
+    >"$output_file" 2>"$err_file" &
+  local agent_pid=$!
+
+  # Wait with timeout
+  local waited=0
+  while kill -0 "$agent_pid" 2>/dev/null; do
+    if [[ $waited -ge $timeout_val ]]; then
+      kill "$agent_pid" 2>/dev/null; wait "$agent_pid" 2>/dev/null
+      echo "Hermes call timed out after ${timeout_val}s" >> "$err_file"
+      return 124  # same exit code as GNU timeout
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  wait "$agent_pid"
+  local exit_code=$?
+
+  # Extract new session ID from stderr (format: "session_id: <id>")
+  local new_sid
+  new_sid=$(grep -o 'session_id: [^ ]*' "$err_file" 2>/dev/null | head -1 | cut -d' ' -f2)
+  [[ -n "$new_sid" ]] && save_hermes_session "$profile" "$new_sid"
+
+  return $exit_code
+}
+
+get_hermes_session(){
+  local profile="$1"
+  python3 <<PY
+import sqlite3
+try:
+    conn=sqlite3.connect("$DB_FILE"); cur=conn.cursor()
+    cur.execute("SELECT hermes_session_id FROM mas_agent_sessions WHERE agent=? AND project=? AND hermes_session_id IS NOT NULL AND hermes_session_id!='' ORDER BY updated_at DESC LIMIT 1", ("$profile","${CURRENT_PROJECT:-default}"))
+    row=cur.fetchone(); conn.close()
+    print(row[0] if row else '')
+except Exception: print('')
+PY
+}
+
+save_hermes_session(){
+  local profile="$1" hermes_sid="$2"
+  python3 <<PY
+import sqlite3
+from datetime import datetime, timezone
+try:
+    conn=sqlite3.connect("$DB_FILE"); cur=conn.cursor()
+    now=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    cur.execute("UPDATE mas_agent_sessions SET hermes_session_id=?, updated_at=? WHERE agent=? AND project=?",
+                ("$hermes_sid", now, "$profile", "${CURRENT_PROJECT:-default}"))
+    conn.commit(); conn.close()
+except Exception: pass
+PY
+}
+
+get_hermes_model(){
+  local profile="$1"
+  local config_file="${HOME}/.hermes/profiles/${profile}/config.yaml"
+  [[ ! -f "$config_file" ]] && { echo ""; return; }
+  # Parse model.default from YAML using stdlib only (grep + sed)
+  python3 <<PY
+import re
+try:
+    with open("$config_file") as f: text=f.read()
+    # Find model: section, then default: line
+    m=re.search(r'^model:\s*\n(?:[ \t]+\S.*\n)*?[ \t]+default:\s*(.+)', text, re.MULTILINE)
+    print(m.group(1).strip().strip('"').strip("'") if m else '')
+except: print('')
+PY
+}
 
 # ─── Database ───
 ensure_db(){ python3 <<PY
@@ -142,12 +231,16 @@ cur.execute('''CREATE TABLE IF NOT EXISTS exchanges (
  status TEXT, error_text TEXT)''')
 cur.execute('''CREATE TABLE IF NOT EXISTS mas_agent_sessions (
  project TEXT, mas_session_id TEXT, agent TEXT, agent_id TEXT, openclaw_session_id TEXT,
+ hermes_session_id TEXT,
  created_at TEXT, updated_at TEXT, PRIMARY KEY (mas_session_id, agent))''')
 cur.execute('''CREATE TABLE IF NOT EXISTS mas_meta (key TEXT PRIMARY KEY, value TEXT)''')
 # Migrate v4.0/v4.1 DBs (add project column if missing)
 for table, cols in {
     'exchanges': {'project': "ALTER TABLE exchanges ADD COLUMN project TEXT DEFAULT 'default'"},
-    'mas_agent_sessions': {'project': "ALTER TABLE mas_agent_sessions ADD COLUMN project TEXT DEFAULT 'default'"},
+    'mas_agent_sessions': {
+        'project': "ALTER TABLE mas_agent_sessions ADD COLUMN project TEXT DEFAULT 'default'",
+        'hermes_session_id': "ALTER TABLE mas_agent_sessions ADD COLUMN hermes_session_id TEXT",
+    },
 }.items():
     existing = {row[1] for row in cur.execute(f"PRAGMA table_info({table})")}
     for col, ddl in cols.items():
@@ -292,14 +385,14 @@ get_or_create_agent_session(){
   local mas_session_id="$1" project="$2" agent="$3" agent_id="$4"
   python3 <<PY
 import sqlite3
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 conn=sqlite3.connect("$DB_FILE"); cur=conn.cursor()
 cur.execute("SELECT openclaw_session_id FROM mas_agent_sessions WHERE mas_session_id=? AND agent=?", ("$mas_session_id","$agent"))
 row=cur.fetchone()
 if row: print(row[0])
 else:
     sid="mas::"+"$project"+"::"+"$agent"
-    now=datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ')
+    now=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     cur.execute("INSERT INTO mas_agent_sessions (project,mas_session_id,agent,agent_id,openclaw_session_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
                 ("$project","$mas_session_id","$agent","$agent_id",sid,now,now))
     conn.commit(); print(sid)
@@ -315,6 +408,7 @@ get_context_for_agent(){
 
 
 # ─── Response extraction (hardened) ───
+# Handles both Hermes plain text output and legacy OpenClaw JSON payloads
 extract_structured_response(){
   local response_file="$1"
   python3 <<PY
@@ -323,28 +417,36 @@ try:
     with open("$response_file") as f: raw = f.read()
 except Exception as e:
     print(json.dumps({'_error': True, '_stage': 'file_read', '_msg': str(e)})); sys.exit(0)
+
+text = ''
+meta = {}
+
+# Try JSON first (legacy OpenClaw format), fall back to plain text (Hermes)
 try:
     data = json.loads(raw)
-except json.JSONDecodeError as e:
-    print(json.dumps({'_error': True, '_stage': 'json_parse', '_msg': f'Invalid JSON: {e}', '_raw_head': raw[:200]})); sys.exit(0)
-# Support both old format {"status":"ok","result":{"payloads":[...]}} and new format {"payloads":[...],"meta":{...}}
-if 'payloads' in data and 'status' not in data:
-    # New openclaw agent --json format: payloads at top level
-    payloads = data.get('payloads') or []
-elif data.get('status') == 'ok':
-    result = data.get('result') or {}
-    payloads = result.get('payloads') or []
-else:
-    print(json.dumps({'_error': True, '_stage': 'agent_status', '_msg': f"Agent returned status={data.get('status')}", '_detail': data.get('error', '')})); sys.exit(0)
-texts = [p.get('text','').strip() for p in payloads if isinstance(p, dict) and p.get('text') and p.get('text').strip()]
-if not texts:
-    print(json.dumps({'_error': True, '_stage': 'empty_payload', '_msg': 'No non-empty text payloads', '_payloads': len(payloads)})); sys.exit(0)
-text = '\n\n'.join(texts).strip()
+    if 'payloads' in data and 'status' not in data:
+        payloads = data.get('payloads') or []
+    elif data.get('status') == 'ok':
+        result = data.get('result') or {}
+        payloads = result.get('payloads') or []
+    else:
+        print(json.dumps({'_error': True, '_stage': 'agent_status', '_msg': f"Agent returned status={data.get('status')}", '_detail': data.get('error', '')})); sys.exit(0)
+    texts = [p.get('text','').strip() for p in payloads if isinstance(p, dict) and p.get('text') and p.get('text').strip()]
+    if not texts:
+        print(json.dumps({'_error': True, '_stage': 'empty_payload', '_msg': 'No non-empty text payloads', '_payloads': len(payloads)})); sys.exit(0)
+    text = '\n\n'.join(texts).strip()
+    meta = (((data.get('result') or {}).get('meta') or {}).get('agentMeta') or {}) or ((data.get('meta') or {}).get('agentMeta') or {})
+except (json.JSONDecodeError, ValueError):
+    # Hermes plain text output — use raw text directly
+    text = raw.strip()
+    if not text:
+        print(json.dumps({'_error': True, '_stage': 'empty_response', '_msg': 'Agent returned empty response'})); sys.exit(0)
+
 summary = textwrap.shorten(' '.join(text.split()), width=280, placeholder='...')
 paragraphs = [p.strip().replace('\n',' ') for p in text.split('\n') if p.strip()]
 key_points = []
 for p in paragraphs:
-    clean = p.lstrip('-•*0123456789. )(').strip()
+    clean = p.lstrip('-\u2022*0123456789. )(').strip()
     if clean and clean not in key_points: key_points.append(textwrap.shorten(clean, width=160, placeholder='...'))
     if len(key_points) >= 5: break
 open_questions = []
@@ -363,8 +465,6 @@ for line in paragraphs:
     if any(tok in line.lower() for tok in ['attached','artifact','file:','.pdf','.csv','.xlsx','.md']):
         artifacts.append(textwrap.shorten(line, width=180, placeholder='...'))
     if len(artifacts) >= 5: break
-# Support both old format (result.meta.agentMeta) and new format (meta.agentMeta)
-meta = (((data.get('result') or {}).get('meta') or {}).get('agentMeta') or {}) or ((data.get('meta') or {}).get('agentMeta') or {})
 print(json.dumps({'text':text,'summary':summary,'key_points':key_points,'open_questions':open_questions,'citations':citations,'artifacts':artifacts,'agent_session_id':meta.get('sessionId',''),'provider':meta.get('provider',''),'model':meta.get('model','')}, ensure_ascii=False))
 PY
 }
@@ -386,7 +486,7 @@ add_exchange(){
   local project="$1" mas_session_id="$2" agent="$3" agent_id="$4" agent_session_id="$5" request_file="$6" struct_file="$7" status="$8" error_text_file="${9:-}"
   python3 <<PY
 import sqlite3, json, uuid
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 with open("$request_file") as f: req=f.read()
 with open("$struct_file") as f: s=json.load(f)
 err=None
@@ -394,7 +494,7 @@ if "$error_text_file":
     try:
         with open("$error_text_file") as f: err=f.read()
     except: err=None
-now=datetime.now(UTC); conn=sqlite3.connect("$DB_FILE"); cur=conn.cursor()
+now=datetime.now(timezone.utc); conn=sqlite3.connect("$DB_FILE"); cur=conn.cursor()
 cur.execute("""INSERT INTO exchanges (turn_id,project,mas_session_id,date,timestamp,time_hm,agent,agent_id,agent_session_id,user_request,response_text,response_summary,key_points_json,open_questions_json,citations_json,artifacts_json,status,error_text) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
 (str(uuid.uuid4()),"$project","$mas_session_id",now.strftime('%Y-%m-%d'),now.strftime('%Y-%m-%dT%H:%M:%SZ'),now.strftime('%H:%M'),"$agent","$agent_id","$agent_session_id",req,s.get('text',''),s.get('summary',''),json.dumps(s.get('key_points',[]),ensure_ascii=False),json.dumps(s.get('open_questions',[]),ensure_ascii=False),json.dumps(s.get('citations',[]),ensure_ascii=False),json.dumps(s.get('artifacts',[]),ensure_ascii=False),"$status",err))
 cur.execute("UPDATE mas_agent_sessions SET updated_at=? WHERE mas_session_id=? AND agent=?", (now.strftime('%Y-%m-%dT%H:%M:%SZ'),"$mas_session_id","$agent"))
@@ -418,39 +518,38 @@ PY
 }
 
 # ─── Model switching ───
-agent_index_for_model(){
-  # Indices from: openclaw config get agents.list
-  # 0=main(Archie) 1=work 2=wang 3=lynch 4=bootstrap 5=alonzo
-  case "$1" in archie) echo 0 ;; wang) echo 2 ;; lynch) echo 3 ;; bootstrap) echo 4 ;; alonzo) echo 5 ;; *) echo "" ;; esac
-}
-
+# Model aliases resolve to OpenRouter format by default.
+# Zenmux-prefixed aliases are preserved for future use (pass through as-is).
 resolve_model_alias(){
   case "$1" in
-    claude-opus-4|opus4) echo "zenmux/anthropic/claude-opus-4" ;;
-    claude-opus-4.6|opus|claude) echo "zenmux/anthropic/claude-opus-4.6" ;;
-    claude-sonnet-4.6|sonnet|sonnet46) echo "zenmux/anthropic/claude-sonnet-4-6" ;;
-    gpt-4.1-mini|gpt|mini) echo "zenmux/openai/gpt-4.1-mini" ;;
-    gpt-5.4|gpt54) echo "zenmux/openai/gpt-5.4" ;;
-    gpt-5.3-codex|codex|coding) echo "zenmux/openai/gpt-5.3-codex" ;;
-    qwen-3.5-plus|qwen35|qwen) echo "zenmux/qwen/qwen3.5-plus" ;;
-    qwen-3-max|qwen3) echo "zenmux/qwen/qwen3-max" ;;
-    glm-5-turbo|glm|glm5) echo "zenmux/z-ai/glm-5-turbo" ;;
-    doubao-seed|doubao) echo "zenmux/volcengine/doubao-seed-2.0-pro" ;;
-    grok-4.2|grok|fast) echo "zenmux/x-ai/grok-4.2-fast" ;;
+    claude-opus-4|opus4) echo "anthropic/claude-opus-4" ;;
+    claude-opus-4.6|opus|claude) echo "anthropic/claude-opus-4.6" ;;
+    claude-sonnet-4.6|sonnet|sonnet46) echo "anthropic/claude-sonnet-4-6" ;;
+    gpt-4.1-mini|gpt|mini) echo "openai/gpt-4.1-mini" ;;
+    gpt-5.4|gpt54) echo "openai/gpt-5.4" ;;
+    gpt-5.3-codex|codex|coding) echo "openai/gpt-5.3-codex" ;;
+    qwen-3.5-plus|qwen35|qwen) echo "qwen/qwen3.5-plus" ;;
+    qwen-3-max|qwen3) echo "qwen/qwen3-max" ;;
+    glm-5-turbo|glm|glm5) echo "z-ai/glm-5-turbo" ;;
+    doubao-seed|doubao) echo "volcengine/doubao-seed-2.0-pro" ;;
+    grok-4.2|grok|fast) echo "x-ai/grok-4.2-fast" ;;
     kimi|moonshot) echo "moonshot/kimi-k2.5" ;;
     minimax|minimax-m2.7|m2.7) echo "minimax/MiniMax-M2.7" ;;
     local-qwen|qwen-local|qwen9b) echo "ollama/qwen3.5:9b" ;;
     local-phi4|phi4|phi) echo "ollama/phi4:latest" ;;
+    gemini-2.5-flash|gemini-flash|flash) echo "gemini/gemini-2.5-flash" ;;
+    gemini-2.5-pro|gemini-pro|gemini) echo "gemini/gemini-2.5-pro" ;;
+    glm-5|glm5|bigmodel) echo "BigModel/glm-5" ;;
+    zenmux/*) echo "${1#zenmux/}" ;;  # Strip namespace prefix for API
+    BigModel/*) echo "$1" ;;  # Pass through BigModel prefixed models
     *) echo "$1" ;;
   esac
 }
 
 show_model(){
   local agent; agent=$(normalize_agent "$1")
-  local idx; idx=$(agent_index_for_model "$agent")
-  [[ -z "$idx" ]] && { emit_error "model" "Unknown agent: $agent"; return 1; }
-  local path="agents.list[${idx}].model.primary"
-  local model; model=$(openclaw config get "$path" 2>/dev/null)
+  local model; model=$(get_hermes_model "$agent")
+  [[ -z "$model" ]] && model="(not configured)"
   if [[ "$OUTPUT_JSON" -eq 1 ]]; then
     printf '{"agent":"%s","model":"%s"}\n' "$agent" "$model"
   else
@@ -460,11 +559,8 @@ show_model(){
 
 set_model(){
   local agent; agent=$(normalize_agent "$1"); local alias="$2"
-  local idx; idx=$(agent_index_for_model "$agent")
-  [[ -z "$idx" ]] && { emit_error "model" "Unknown agent: $agent"; return 1; }
   local model; model=$(resolve_model_alias "$alias")
-  local path="agents.list[${idx}].model.primary"
-  openclaw config set "$path" "$model" >/dev/null 2>&1
+  hermes -p "$agent" config set model.default "$model" >/dev/null 2>&1
   if [[ "$OUTPUT_JSON" -eq 1 ]]; then
     printf '{"status":"ok","agent":"%s","model":"%s"}\n' "$agent" "$model"
   else
@@ -475,9 +571,8 @@ set_model(){
 models_overview(){
   echo -e "${BOLD}Current agent models:${NC}"
   for agent in archie wang lynch alonzo bootstrap; do
-    local idx; idx=$(agent_index_for_model "$agent")
-    local path="agents.list[${idx}].model.primary"
-    local model; model=$(openclaw config get "$path" 2>/dev/null)
+    local model; model=$(get_hermes_model "$agent")
+    [[ -z "$model" ]] && model="(not configured)"
     echo -e "  $(get_agent_name "$agent"): ${CYAN}$model${NC}"
   done
 }
@@ -541,14 +636,16 @@ Instructions:
   [[ "$OUTPUT_JSON" -eq 0 ]] && echo -e "Sending to ${BOLD}$agent_name${NC} [project: $CURRENT_PROJECT]..."
   log INFO "stage=agent_call agent=$agent project=$CURRENT_PROJECT session=$CURRENT_SID agent_session=$agent_session_id timeout=${MAS_TIMEOUT}s"
 
-  # Stage 2: Agent call
-  local output_file err_file exit_code t_start t_end duration_ms
-  output_file=$(mktemp); err_file=$(mktemp)
+  # Stage 2: Agent call via Hermes
+  local output_file err_file exit_code t_start t_end duration_ms msg_file
+  output_file=$(mktemp); err_file=$(mktemp); msg_file=$(mktemp)
+  printf '%s' "$full_message" > "$msg_file"
   t_start=$(date +%s)
-  openclaw agent --agent "$agent_id" --session-id "$agent_session_id" --message "$full_message" --json --timeout "$MAS_TIMEOUT" > "$output_file" 2> "$err_file"
+  hermes_agent_call "$agent" "$msg_file" "$output_file" "$err_file" "$MAS_TIMEOUT"
   exit_code=$?
   t_end=$(date +%s)
   duration_ms=$(( (t_end - t_start) * 1000 ))
+  rm -f "$msg_file"
 
   if [[ $exit_code -ne 0 ]]; then
     local err_tail; err_tail=$(tail -5 "$err_file" 2>/dev/null | tr '\n' ' ')
@@ -667,13 +764,15 @@ Instructions:
 
   log INFO "stage=lead_dispatch agent=$agent project=$CURRENT_PROJECT session=$CURRENT_SID"
 
-  local output_file err_file exit_code t_start t_end duration_ms
-  output_file=$(mktemp); err_file=$(mktemp)
+  local output_file err_file exit_code t_start t_end duration_ms msg_file
+  output_file=$(mktemp); err_file=$(mktemp); msg_file=$(mktemp)
+  printf '%s' "$full_message" > "$msg_file"
   t_start=$(date +%s)
-  openclaw agent --agent "$agent_id" --session-id "$agent_session_id" --message "$full_message" --json --timeout "$MAS_TIMEOUT" > "$output_file" 2> "$err_file"
+  hermes_agent_call "$agent" "$msg_file" "$output_file" "$err_file" "$MAS_TIMEOUT"
   exit_code=$?
   t_end=$(date +%s)
   duration_ms=$(( (t_end - t_start) * 1000 ))
+  rm -f "$msg_file"
 
   if [[ $exit_code -ne 0 ]]; then
     log ERROR "stage=lead_dispatch_fail agent=$agent exit=$exit_code"
@@ -694,10 +793,12 @@ Instructions:
     echo -e "  ${DIM}$parse_detail${NC}"
     # Retry once with a fresh call
     rm -f "$output_file" "$struct_file"
-    output_file=$(mktemp); struct_file=$(mktemp)
+    output_file=$(mktemp); struct_file=$(mktemp); msg_file=$(mktemp)
+    printf '%s' "$full_message" > "$msg_file"
     t_start=$(date +%s)
-    openclaw agent --agent "$agent_id" --session-id "$agent_session_id" --message "$full_message" --json --timeout "$MAS_TIMEOUT" > "$output_file" 2>> "$err_file"
+    hermes_agent_call "$agent" "$msg_file" "$output_file" "$err_file" "$MAS_TIMEOUT"
     exit_code=$?; t_end=$(date +%s); duration_ms=$(( (t_end - t_start) * 1000 ))
+    rm -f "$msg_file"
     if [[ $exit_code -ne 0 ]]; then
       echo -e "  ${RED}✗${NC} $agent_name retry also failed (exit=$exit_code)"
       rm -f "$req_file" "$output_file" "$struct_file" "$err_file"
@@ -1264,13 +1365,15 @@ cmd_ping(){
   local agent_name; agent_name=$(get_agent_name "$agent")
   [[ "$OUTPUT_JSON" -eq 0 ]] && echo -e "Pinging ${BOLD}$agent_name${NC} ($agent_id)..."
 
-  local output_file err_file exit_code t_start t_end duration_ms
-  output_file=$(mktemp); err_file=$(mktemp)
+  local output_file err_file exit_code t_start t_end duration_ms msg_file
+  output_file=$(mktemp); err_file=$(mktemp); msg_file=$(mktemp)
+  printf 'Reply with exactly: PONG' > "$msg_file"
   t_start=$(date +%s)
-  openclaw agent --agent "$agent_id" --message "Reply with exactly: PONG" --json --timeout 120 > "$output_file" 2> "$err_file"
+  hermes_agent_call "$agent" "$msg_file" "$output_file" "$err_file" 120
   exit_code=$?
   t_end=$(date +%s)
   duration_ms=$(( (t_end - t_start) * 1000 ))
+  rm -f "$msg_file"
 
   local model="" provider="" response_ok=false response_text=""
   if [[ $exit_code -eq 0 ]]; then
@@ -1332,21 +1435,27 @@ cmd_doctor(){
   echo -e "${BOLD}MAS v${MAS_VERSION} Doctor${NC}"
   echo ""
 
-  # 1. OpenClaw CLI
-  if command -v openclaw >/dev/null 2>&1; then
-    local ver; ver=$(openclaw --version 2>/dev/null)
-    echo -e "${GREEN}✓${NC} OpenClaw CLI: $ver"
+  # 1. Hermes Agent CLI
+  if command -v hermes >/dev/null 2>&1; then
+    local ver; ver=$(hermes version 2>/dev/null | head -1)
+    echo -e "${GREEN}✓${NC} Hermes Agent: $ver"
   else
-    echo -e "${RED}✗${NC} OpenClaw CLI not found in PATH"
+    echo -e "${RED}✗${NC} Hermes Agent not found in PATH"
     issues=$((issues+1))
   fi
 
-  # 2. Gateway
-  if openclaw health >/dev/null 2>&1; then
-    echo -e "${GREEN}✓${NC} Gateway: healthy"
+  # 2. Hermes profiles
+  local profile_count=0
+  for p in archie wang lynch bootstrap alonzo; do
+    if [[ -d "${HOME}/.hermes/profiles/$p" ]]; then
+      profile_count=$((profile_count+1))
+    fi
+  done
+  if [[ $profile_count -eq 5 ]]; then
+    echo -e "${GREEN}✓${NC} Hermes profiles: all 5 configured"
   else
-    echo -e "${RED}✗${NC} Gateway: not responding"
-    issues=$((issues+1))
+    echo -e "${YELLOW}△${NC} Hermes profiles: $profile_count/5 found"
+    [[ $profile_count -eq 0 ]] && issues=$((issues+1))
   fi
 
   # 3. SQLite DB
@@ -1408,13 +1517,11 @@ PY
     echo -e "${YELLOW}△${NC} Config file not found: $CONFIG_FILE"
   fi
 
-  # 7. Agent models
+  # 7. Agent models (read from Hermes profiles)
   echo ""
   echo -e "${BOLD}Agent models:${NC}"
   for agent in archie wang lynch alonzo bootstrap; do
-    local idx; idx=$(agent_index_for_model "$agent")
-    local path="agents.list[${idx}].model.primary"
-    local model; model=$(openclaw config get "$path" 2>/dev/null)
+    local model; model=$(get_hermes_model "$agent")
     if [[ -n "$model" ]]; then
       echo -e "  ${GREEN}✓${NC} $(get_agent_name "$agent"): $model"
     else
@@ -1481,6 +1588,115 @@ reset_context(){
   fi
 }
 
+# ─── Maintenance mode ───
+# Standalone maintenance tasks via bootstrap agent, outside project context.
+# Injects system knowledge (paths, operations, safety rules) into the prompt.
+MAINTENANCE_LOG="${MAS_HUB}/logs/maintenance.log"
+
+cmd_maintenance(){
+  local task="$*"
+
+  # --log: view recent maintenance log
+  if [[ "$task" == "--log" || "$task" == "log" ]]; then
+    if [[ -f "$MAINTENANCE_LOG" ]]; then
+      tail -80 "$MAINTENANCE_LOG"
+    else
+      echo "No maintenance log yet."
+    fi
+    return 0
+  fi
+
+  [[ -z "$task" ]] && { echo "Usage: mas maintenance <task>"; echo "       mas maintenance --log"; return 1; }
+
+  local maint_prompt="You are Bootstrap, the MAS Hub maintenance agent.
+
+SYSTEM CONTEXT:
+- MAS Hub source: ${MAS_HUB_SRC}
+- Runtime data: ${MAS_HUB}
+- Blackboard DB: ${DB_FILE}
+- Orchestrator log: ${LOG_FILE}
+- Maintenance log: ${MAINTENANCE_LOG}
+- Agent profiles: ${HOME}/.hermes/profiles/{archie,wang,lynch,bootstrap,alonzo}/
+- State file: ${STATE_FILE}
+- Config: ${CONFIG_FILE}
+
+AVAILABLE DIAGNOSTICS:
+- mas doctor (system health)
+- mas ping <agent> (agent roundtrip)
+- mas models (current model assignments)
+- sqlite3 ${DB_FILE} 'PRAGMA integrity_check'
+
+SAFETY RULES:
+- Use trash or mv to archive — never rm
+- Backup before modifying configs
+- Never change API keys without human approval
+- Log all actions
+- Escalate to human operator if unsure
+
+MAINTENANCE TASK: ${task}
+
+Execute the task. Report what you checked, what you found, and any actions taken."
+
+  echo -e "${BOLD}${CYAN}╔═══════════════════════════════════════════════════════════════╗${NC}"
+  echo -e "${BOLD}${CYAN}║           MAS Maintenance — Bootstrap                         ║${NC}"
+  echo -e "${BOLD}${CYAN}╚═══════════════════════════════════════════════════════════════╝${NC}"
+  echo -e "Task: ${DIM}${task}${NC}"
+  echo ""
+
+  log INFO "stage=maintenance task=$task"
+
+  local output_file err_file msg_file exit_code t_start t_end duration_ms
+  output_file=$(mktemp); err_file=$(mktemp); msg_file=$(mktemp)
+  printf '%s' "$maint_prompt" > "$msg_file"
+  t_start=$(date +%s)
+  hermes_agent_call "bootstrap" "$msg_file" "$output_file" "$err_file" "${MAS_TIMEOUT}"
+  exit_code=$?
+  t_end=$(date +%s)
+  duration_ms=$(( (t_end - t_start) * 1000 ))
+  rm -f "$msg_file"
+
+  if [[ $exit_code -ne 0 ]]; then
+    emit_error "maintenance" "Bootstrap agent failed (exit=$exit_code, ${duration_ms}ms)"
+    rm -f "$output_file" "$err_file"
+    return 1
+  fi
+
+  # Parse and display response
+  local struct_file; struct_file=$(mktemp)
+  extract_structured_response "$output_file" > "$struct_file" 2>> "$err_file"
+
+  if ! check_extraction_error "$struct_file" >/dev/null 2>&1; then
+    emit_error "maintenance" "Bootstrap responded but output was unparseable"
+    rm -f "$output_file" "$struct_file" "$err_file"
+    return 1
+  fi
+
+  local text
+  text=$(python3 - <<PY
+import json
+with open("$struct_file") as f: s=json.load(f)
+print(s.get('text',''))
+PY
+)
+
+  echo -e "${CYAN}───────────────────────────────────────────────────────────────${NC}"
+  echo "$text"
+  echo ""
+  echo -e "${DIM}(${duration_ms}ms)${NC}"
+
+  # Append to maintenance log
+  {
+    echo "═══ $(date -u +"%Y-%m-%dT%H:%M:%SZ") ═══"
+    echo "Task: $task"
+    echo "Duration: ${duration_ms}ms"
+    echo ""
+    echo "$text"
+    echo ""
+  } >> "$MAINTENANCE_LOG"
+
+  rm -f "$output_file" "$struct_file" "$err_file"
+}
+
 # ─── Help ───
 show_help(){
   cat <<EOF
@@ -1509,6 +1725,11 @@ ${BOLD}MODEL SWITCHING:${NC}
   mas model <agent> current       Show current model
   mas model <agent> set <alias>   Set model by alias
   mas models                      Show all agent models
+
+${BOLD}MAINTENANCE:${NC}
+  mas maintenance <task>          Run maintenance task via Bootstrap agent
+  mas maintenance --log           View recent maintenance log
+  mas maint <task>                Alias for maintenance
 
 ${BOLD}DIAGNOSTICS:${NC}
   mas ping <agent>                Health-check an agent (roundtrip test)
@@ -1585,6 +1806,7 @@ case "${1:-}" in
     shift 2
     [[ -z "${1:-}" ]] && { echo "Usage: mas lead @<agent> <briefing>"; exit 1; }
     cmd_lead "$lead_target" "$*" ;;
+  maintenance|maint) shift; cmd_maintenance "$*" ;;
   @archie|@wang|@lynch|@alonzo|@bootstrap|@bob) cmd="$1"; shift; send_to_agent "$cmd" "$*" ;;
   @all) shift; broadcast "$*" ;;
   help|--help|-h) show_help ;;

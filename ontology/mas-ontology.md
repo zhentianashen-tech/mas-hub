@@ -65,7 +65,7 @@
 ## Kimi Code CLI Integration (IT Maintenance Tool)
 
 **Tool ID:** `tool_it_maint_01`  
-**Type:** External CLI Tool (not an OpenClaw agent)  
+**Type:** External CLI Tool (not a Hermes agent)  
 **Location:** `kimi` command (installed via uv)  
 **Version:** 1.23.0+  
 **Documentation:** https://moonshotai.github.io/kimi-cli/
@@ -86,7 +86,7 @@ Agent (Bootstrap/Archie) → MAS CLI → Kimi Code CLI → Execute Maintenance T
 ### Usage Examples
 ```bash
 # Interactive maintenance session
-kimi "Rotate logs older than 7 days in ~/.openclaw/mas-hub/logs/"
+kimi "Rotate logs older than 7 days in ~/.hermes/mas-hub/logs/"
 
 # Non-interactive task execution
 kimi --print "Validate MAS Hub config.json and fix any JSON syntax errors"
@@ -97,14 +97,14 @@ kimi "Check git status in ~/Projects/mas-hub/, commit any config changes with me
 
 ### Safety Constraints
 - **Non-destructive by default:** Uses `trash` over `rm`, creates backups before modifications
-- **Scope-limited:** Only operates within MAS Hub directories (`~/Projects/mas-hub/`, `~/.openclaw/mas-hub/`)
+- **Scope-limited:** Only operates within MAS Hub directories (`~/project/mas-hub/`, `~/.hermes/mas-hub/`)
 - **Escalation:** Complex issues escalate to Bootstrap (human maintainer Bob)
-- **Logging:** All Kimi Code operations logged to `~/.openclaw/mas-hub/logs/kimi-maintenance.log`
+- **Logging:** All Kimi Code operations logged to `~/.hermes/mas-hub/logs/kimi-maintenance.log`
 
 ### Escalation Target
 Kimi Code escalates to **Bootstrap (Bob)** when:
 - Maintenance task requires human approval (destructive operations)
-- System-wide changes needed (OpenClaw config, agent models)
+- System-wide changes needed (Hermes config, agent models)
 - Unrecoverable errors detected (database corruption, missing critical files)
 
 ### Alonzo (Tech Strategy Research)
@@ -213,21 +213,21 @@ Lynch must verify:
 ## 4. Memory Architecture
 
 ### MAS Hub Memory (Project-Scoped)
-- **Location:** `~/.openclaw/mas-hub/agent-memories/{agent}_{YYYY-MM-DD}.md`
+- **Location:** `~/.hermes/mas-hub/agent-memories/{agent}_{YYYY-MM-DD}.md`
 - **Purpose:** Daily memory for MAS Hub interactions only
 - **Scope:** Project-specific tasks, findings, collaborations
 - **Retention:** Daily files, archived by project context
 - **Access:** Only during MAS Hub operations (`mas` commands)
 
-### Native Workspace Memory (Agent-Scoped)
-- **Location:** `~/.openclaw/workspace/memory/{YYYY-MM-DD}.md`
+### Native Hermes Profile Memory (Agent-Scoped)
+- **Location:** `~/.hermes/profiles/{agent}/memories/`
 - **Purpose:** Agent's personal continuity across all interactions
-- **Scope:** Direct TUI sessions, personal learnings, identity
+- **Scope:** Direct Hermes sessions, personal learnings, identity
 - **Retention:** Daily files, curated into long-term memory
 - **Access:** All agent interactions (MAS and non-MAS)
 
 ### Shared Blackboard (Project-Wide)
-- **Location:** `~/.openclaw/mas-hub/blackboard/shared_context.db`
+- **Location:** `~/.hermes/mas-hub/blackboard/shared_context.db`
 - **Purpose:** Cross-agent coordination and context sharing
 - **Scope:** All exchanges within a MAS project session
 - **Structure:** SQLite with structured fields (agent, request, summary, key_points, etc.)
@@ -361,7 +361,7 @@ Rounds: {n} | Tasks: {dispatched} dispatched, {completed} completed, {failed} fa
   templates/                     # Workflow templates
   config.json                    # Agent configuration reference
 
-~/.openclaw/mas-hub/             # Runtime data
+~/.hermes/mas-hub/               # Runtime data
   blackboard/
     shared_context.db            # SQLite blackboard
   agent-memories/                # Daily MAS memory files
@@ -370,11 +370,11 @@ Rounds: {n} | Tasks: {dispatched} dispatched, {completed} completed, {failed} fa
   state.json                     # Current project/session state
   config.json                    # Live agent configuration
 
-~/.openclaw/agents/{agent}/      # Individual agent workspaces
+~/.hermes/profiles/{agent}/      # Individual agent Hermes profiles
+  config.yaml                    # Agent model and settings
+  SOUL.md                        # Agent personality/system prompt
   sessions/                      # Native session history
-  agent/
-    system.md                    # Core system prompt
-  memory/                        # Native workspace memory
+  memories/                      # Native profile memory
 ```
 
 ---
@@ -390,7 +390,7 @@ Rounds: {n} | Tasks: {dispatched} dispatched, {completed} completed, {failed} fa
 | **Watchdog** | Timeout monitoring and auto-escalation system |
 | **Stall-Safe Synthesis** | Partial conclusion when agents fail to respond |
 | **Context Injection** | MAS awareness prepended to agent prompts |
-| **Native Workspace** | Agent's personal OpenClaw context (separate from MAS) |
+| **Hermes Profile** | Agent's isolated Hermes instance (config, memory, sessions) |
 
 ---
 

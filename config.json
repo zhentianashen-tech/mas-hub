@@ -72,7 +72,7 @@
     "tool_version": "1.23.0+",
     "wrapper_script": "~/Projects/mas-hub/bin/kimi-maintenance",
     "daily_script": "~/Projects/mas-hub/bin/kimi-daily-maintenance.sh",
-    "log_file": "~/.openclaw/mas-hub/logs/kimi-maintenance.log",
+    "log_file": "~/.hermes/mas-hub/logs/kimi-maintenance.log",
     "schedule": {
       "daily": "06:00",
       "weekly": "Sunday 02:00"

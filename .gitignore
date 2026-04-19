@@ -23,7 +23,7 @@ __pycache__/
 *~
 
 # Runtime data (never commit user data)
-~/.openclaw/mas-hub/
+~/.hermes/mas-hub/
 
 # Logs
 *.log
@@ -36,3 +36,11 @@ agent-memories/
 # Lock files
 *.lock
 blackboard/.lock/
+
+# Secrets (never commit API keys)
+.env.production
+.env.local
+.env
+
+# Claude Code
+.claude/

@@ -34,7 +34,7 @@ alonzo_memory/
 ### MAS Hub Memory (Separate System)
 When participating in MAS Hub sessions, memory lives at:
 ```
-~/.openclaw/mas-hub/agent-memories/alonzo_{YYYY-MM-DD}.md
+~/.hermes/mas-hub/agent-memories/alonzo_{YYYY-MM-DD}.md
 ```
 
 ### MEMORY.md (Curated Long-Term)

@@ -1,0 +1,9 @@
+#!/bin/bash
+# MAS Maintenance Wrapper
+# Convenience alias for: mas maintenance <task>
+#
+# Usage: mas-maintenance "Rotate logs older than 7 days"
+#        mas-maintenance --log
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "${SCRIPT_DIR}/mas" maintenance "$@"

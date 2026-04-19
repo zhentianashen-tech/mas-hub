@@ -7,9 +7,9 @@
 
 set -e
 
-MAS_HUB_SRC="$HOME/Projects/mas-hub"
+MAS_HUB_SRC="$HOME/project/mas-hub"
 MAS_HUB_BIN="$MAS_HUB_SRC/bin"
-OPENCLAW_MAS_HUB="$HOME/.openclaw/mas-hub"
+HERMES_MAS_HUB="$HOME/.hermes/mas-hub"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -53,13 +53,13 @@ check_prereq() {
 
 check_prereqs() {
     echo -e "${BOLD}${CYAN}╔═══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${BOLD}${CYAN}║           MAS Hub Installer — Prerequisite Check              ║${NC}"
+    echo -e "${BOLD}${CYAN}║        MAS Hub Installer — Prerequisite Check (Hermes)         ║${NC}"
     echo -e "${BOLD}${CYAN}╚═══════════════════════════════════════════════════════════════╝${NC}"
     echo ""
 
     local failed=0
 
-    check_prereq "openclaw" "OpenClaw CLI" "https://openclaw.ai" || failed=1
+    check_prereq "hermes" "Hermes Agent" "https://github.com/NousResearch/hermes-agent" || failed=1
     check_prereq "python3" "Python 3" "https://python.org" || failed=1
     check_prereq "bash" "Bash" "" || failed=1
     check_prereq "sqlite3" "SQLite3" "" || failed=1
@@ -89,33 +89,54 @@ check_prereqs() {
     echo ""
 }
 
-check_openclaw_health() {
-    log_info "Checking OpenClaw Gateway health..."
-    if openclaw health >/dev/null 2>&1; then
-        log_success "OpenClaw Gateway: healthy"
+check_hermes_health() {
+    log_info "Checking Hermes Agent health..."
+    if hermes version >/dev/null 2>&1; then
+        log_success "Hermes Agent: $(hermes version 2>/dev/null | head -1)"
     else
-        log_warn "OpenClaw Gateway: not responding"
-        echo -e "  ${DIM}Start with: openclaw gateway start${NC}"
+        log_warn "Hermes Agent: not responding"
+        echo -e "  ${DIM}Check with: hermes doctor${NC}"
         echo -e "  ${DIM}Continuing anyway — you can fix this later${NC}"
     fi
+}
+
+setup_hermes_profiles() {
+    log_info "Setting up Hermes agent profiles..."
+    local agents=(archie wang lynch bootstrap alonzo)
+    for agent in "${agents[@]}"; do
+        if [[ -d "$HOME/.hermes/profiles/$agent" ]]; then
+            log_success "Profile '$agent' already exists"
+        else
+            if [[ $DRY_RUN -eq 1 ]]; then
+                echo "  [DRY RUN] Would create Hermes profile: $agent"
+            else
+                hermes profile create "$agent" --clone >/dev/null 2>&1
+                # Copy SOUL.md if agent template exists
+                if [[ -f "$MAS_HUB_SRC/agents/$agent/SOUL.md" ]]; then
+                    cp "$MAS_HUB_SRC/agents/$agent/SOUL.md" "$HOME/.hermes/profiles/$agent/SOUL.md"
+                fi
+                log_success "Created profile '$agent'"
+            fi
+        fi
+    done
 }
 
 create_runtime_dirs() {
     log_info "Creating runtime directories..."
     
     if [[ $DRY_RUN -eq 1 ]]; then
-        echo "  [DRY RUN] Would create: $OPENCLAW_MAS_HUB"
-        echo "  [DRY RUN] Would create: $OPENCLAW_MAS_HUB/blackboard"
-        echo "  [DRY RUN] Would create: $OPENCLAW_MAS_HUB/agent-memories"
-        echo "  [DRY RUN] Would create: $OPENCLAW_MAS_HUB/logs"
-        echo "  [DRY RUN] Would create: $OPENCLAW_MAS_HUB/inbox"
-        echo "  [DRY RUN] Would create: $OPENCLAW_MAS_HUB/outbox"
-        echo "  [DRY RUN] Would create: $OPENCLAW_MAS_HUB/workflows"
+        echo "  [DRY RUN] Would create: $HERMES_MAS_HUB"
+        echo "  [DRY RUN] Would create: $HERMES_MAS_HUB/blackboard"
+        echo "  [DRY RUN] Would create: $HERMES_MAS_HUB/agent-memories"
+        echo "  [DRY RUN] Would create: $HERMES_MAS_HUB/logs"
+        echo "  [DRY RUN] Would create: $HERMES_MAS_HUB/inbox"
+        echo "  [DRY RUN] Would create: $HERMES_MAS_HUB/outbox"
+        echo "  [DRY RUN] Would create: $HERMES_MAS_HUB/workflows"
         return 0
     fi
 
-    mkdir -p "$OPENCLAW_MAS_HUB"/{blackboard,agent-memories,logs,inbox,outbox,workflows}
-    log_success "Runtime directories created at $OPENCLAW_MAS_HUB"
+    mkdir -p "$HERMES_MAS_HUB"/{blackboard,agent-memories,logs,inbox,outbox,workflows}
+    log_success "Runtime directories created at $HERMES_MAS_HUB"
 }
 
 setup_symlinks() {
@@ -143,6 +164,13 @@ setup_symlinks() {
     fi
     ln -sf "$MAS_HUB_BIN/mas-tui" "$HOME/bin/mas-tui"
     log_success "Symlinked: ~/bin/mas-tui → $MAS_HUB_BIN/mas-tui"
+
+    # Symlink mas-maintenance
+    if [[ -L "$HOME/bin/mas-maintenance" ]]; then
+        rm "$HOME/bin/mas-maintenance"
+    fi
+    ln -sf "$MAS_HUB_BIN/mas-maintenance" "$HOME/bin/mas-maintenance"
+    log_success "Symlinked: ~/bin/mas-maintenance → $MAS_HUB_BIN/mas-maintenance"
 }
 
 add_to_path() {
@@ -169,15 +197,15 @@ copy_config() {
     log_info "Setting up configuration..."
 
     if [[ $DRY_RUN -eq 1 ]]; then
-        echo "  [DRY RUN] Would copy: $MAS_HUB_SRC/config.json → $OPENCLAW_MAS_HUB/config.json"
+        echo "  [DRY RUN] Would copy: $MAS_HUB_SRC/config.json → $HERMES_MAS_HUB/config.json"
         return 0
     fi
 
-    if [[ ! -f "$OPENCLAW_MAS_HUB/config.json" ]]; then
-        cp "$MAS_HUB_SRC/config.json" "$OPENCLAW_MAS_HUB/config.json"
-        log_success "Created default config at $OPENCLAW_MAS_HUB/config.json"
+    if [[ ! -f "$HERMES_MAS_HUB/config.json" ]]; then
+        cp "$MAS_HUB_SRC/config.json" "$HERMES_MAS_HUB/config.json"
+        log_success "Created default config at $HERMES_MAS_HUB/config.json"
     else
-        log_warn "Config already exists at $OPENCLAW_MAS_HUB/config.json (skipping)"
+        log_warn "Config already exists at $HERMES_MAS_HUB/config.json (skipping)"
     fi
 }
 
@@ -196,7 +224,7 @@ verify_installation() {
         return 1
     fi
 
-    if [[ -f "$OPENCLAW_MAS_HUB/config.json" ]]; then
+    if [[ -f "$HERMES_MAS_HUB/config.json" ]]; then
         log_success "Config file exists"
     else
         log_warn "Config file not found (will auto-create on first use)"
@@ -233,7 +261,7 @@ uninstall() {
 
     log_warn "This will remove:"
     echo "  - Symlinks: ~/bin/mas, ~/bin/mas-tui"
-    echo "  - Runtime data: $OPENCLAW_MAS_HUB"
+    echo "  - Runtime data: $HERMES_MAS_HUB"
     echo ""
     echo -e "${RED}Your MAS projects, agent memories, and blackboard data will be lost!${NC}"
     echo ""
@@ -248,7 +276,7 @@ uninstall() {
     log_success "Symlinks removed"
 
     log_info "Removing runtime directory..."
-    rm -rf "$OPENCLAW_MAS_HUB"
+    rm -rf "$HERMES_MAS_HUB"
     log_success "Runtime directory removed"
 
     echo ""
@@ -275,7 +303,8 @@ if [[ $DRY_RUN -eq 1 ]]; then
 fi
 
 check_prereqs
-check_openclaw_health
+check_hermes_health
+setup_hermes_profiles
 create_runtime_dirs
 copy_config
 setup_symlinks

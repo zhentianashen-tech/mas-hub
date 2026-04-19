@@ -99,7 +99,7 @@ _List your active projects here. Update when projects start or complete._
 
 ## MAS Hub Protocol
 
-**When in a MAS Hub session, save all project files to:** `~/.openclaw/mas-hub/projects/<project_name>/`
+**When in a MAS Hub session, save all project files to:** `~/.hermes/mas-hub/projects/<project_name>/`
 
 ---
 

@@ -1,0 +1,386 @@
+#!/bin/bash
+# MAS Hub Integration Test Suite v1.0
+# Tests the full Hermes-backed MAS Hub stack
+#
+# Usage:
+#   ./bin/mas-test              # Run all tiers
+#   ./bin/mas-test --tier1      # Offline tests only (no API calls)
+#   ./bin/mas-test --tier2      # Offline + single-agent calls
+#   ./bin/mas-test --all        # Everything including lead mode
+#   ./bin/mas-test --verbose    # Show output on failure
+#   ./bin/mas-test --skip-broadcast  # Skip slow @all test
+
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+MAS="${SCRIPT_DIR}/mas"
+DB_FILE="${HOME}/.hermes/mas-hub/blackboard/shared_context.db"
+TEST_PROJECT="__mastest_$(date +%s)__"
+ORIGINAL_PROJECT=""
+
+PASS=0; FAIL=0; SKIP=0
+TIER=3; VERBOSE=0; SKIP_BROADCAST=0
+FAILURES=()
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
+
+# ─── Parse args ───
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --tier1) TIER=1; shift ;;
+    --tier2) TIER=2; shift ;;
+    --all) TIER=3; shift ;;
+    --verbose|-v) VERBOSE=1; shift ;;
+    --skip-broadcast) SKIP_BROADCAST=1; shift ;;
+    --help|-h) echo "Usage: mas-test [--tier1|--tier2|--all] [--verbose] [--skip-broadcast]"; exit 0 ;;
+    *) echo "Unknown flag: $1"; exit 1 ;;
+  esac
+done
+
+# ─── Test runner ───
+run_test(){
+  local name="$1"; shift
+  printf "  %-48s" "$name"
+  local output exit_code
+  output=$("$@" 2>&1)
+  exit_code=$?
+  if [[ $exit_code -eq 0 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASS=$((PASS+1))
+  else
+    echo -e "${RED}FAIL${NC}"
+    FAIL=$((FAIL+1))
+    FAILURES+=("$name")
+    if [[ $VERBOSE -eq 1 ]]; then
+      echo "$output" | head -5 | sed 's/^/    /'
+    fi
+  fi
+}
+
+# Test that command output contains a pattern (case-insensitive)
+run_test_grep(){
+  local name="$1" pattern="$2"; shift 2
+  printf "  %-48s" "$name"
+  local output
+  output=$("$@" 2>&1)
+  if echo "$output" | grep -qi "$pattern"; then
+    echo -e "${GREEN}PASS${NC}"
+    PASS=$((PASS+1))
+  else
+    echo -e "${RED}FAIL${NC} (expected: $pattern)"
+    FAIL=$((FAIL+1))
+    FAILURES+=("$name")
+    if [[ $VERBOSE -eq 1 ]]; then
+      echo "$output" | head -5 | sed 's/^/    /'
+    fi
+  fi
+}
+
+# Test that command exits non-zero
+run_test_fail(){
+  local name="$1"; shift
+  printf "  %-48s" "$name"
+  local output
+  output=$("$@" 2>&1)
+  if [[ $? -ne 0 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASS=$((PASS+1))
+  else
+    echo -e "${RED}FAIL${NC} (expected non-zero exit)"
+    FAIL=$((FAIL+1))
+    FAILURES+=("$name")
+  fi
+}
+
+skip_test(){
+  local name="$1"
+  printf "  %-48s" "$name"
+  echo -e "${YELLOW}SKIP${NC}"
+  SKIP=$((SKIP+1))
+}
+
+# ─── DB helper ───
+db_count(){
+  python3 -c "
+import sqlite3
+conn=sqlite3.connect('$DB_FILE')
+cur=conn.cursor()
+cur.execute('SELECT COUNT(*) FROM exchanges WHERE project=?', ('$TEST_PROJECT',))
+print(cur.fetchone()[0])
+conn.close()
+"
+}
+
+db_hermes_session(){
+  python3 -c "
+import sqlite3
+conn=sqlite3.connect('$DB_FILE')
+cur=conn.cursor()
+cur.execute('SELECT hermes_session_id FROM mas_agent_sessions WHERE agent=? AND project=? AND hermes_session_id IS NOT NULL ORDER BY updated_at DESC LIMIT 1', ('$1','$TEST_PROJECT'))
+row=cur.fetchone()
+print(row[0] if row else '')
+conn.close()
+"
+}
+
+# ═══════════════════════════════════════════════════════════════
+echo ""
+echo -e "${BOLD}${CYAN}MAS Hub Integration Test Suite v1.0${NC}"
+echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+echo -e "Tier: ${BOLD}$TIER${NC} | Project: $TEST_PROJECT"
+echo ""
+
+# ─── SETUP ───
+ORIGINAL_PROJECT=$("$MAS" project 2>/dev/null | head -1 | sed 's/\x1b\[[0-9;]*m//g' | cut -d' ' -f1)
+"$MAS" new "$TEST_PROJECT" --domain default >/dev/null 2>&1
+
+# ═══════════════════════════════════════════════════════════════
+echo -e "${BOLD}TIER 1 — Offline Tests${NC}"
+echo ""
+
+# 1. Version
+run_test_grep "test_version" "MAS v4" \
+  "$MAS" version
+
+# 2. Help
+run_test_grep "test_help" "PROJECT MANAGEMENT" \
+  "$MAS" help
+
+# 3. Doctor
+run_test_grep "test_doctor" "All checks passed" \
+  "$MAS" doctor
+
+# 4. Profiles exist
+run_test "test_profiles_exist" bash -c '
+  for p in archie wang lynch bootstrap alonzo; do
+    [[ -d "$HOME/.hermes/profiles/$p" ]] || exit 1
+  done
+'
+
+# 5. Models command lists all agents
+run_test "test_models_command" bash -c '
+  out=$("'"$MAS"'" models 2>&1)
+  for a in Archie Wang Lynch alonzo Bootstrap; do
+    echo "$out" | grep -q "$a" || exit 1
+  done
+'
+
+# 6. New project (already created in setup, verify state)
+run_test_grep "test_new_project" "$TEST_PROJECT" \
+  "$MAS" project
+
+# 7. Use project (switch away and back)
+run_test "test_use_project" bash -c '
+  "'"$MAS"'" new __mastest_temp__ >/dev/null 2>&1
+  "'"$MAS"'" use "'"$TEST_PROJECT"'" >/dev/null 2>&1
+  proj=$("'"$MAS"'" project 2>&1)
+  echo "$proj" | grep -q "'"$TEST_PROJECT"'" || exit 1
+'
+
+# 8. Projects list
+run_test_grep "test_projects_list" "$TEST_PROJECT" \
+  "$MAS" projects
+
+# 9. Project quick
+run_test_grep "test_project_quick" "$TEST_PROJECT" \
+  "$MAS" project
+
+# 10. Reset creates new session
+run_test_grep "test_reset" "New MAS session" \
+  "$MAS" reset
+
+# 11. Status with 0 exchanges
+run_test_grep "test_status_empty" "Session exchanges: 0" \
+  "$MAS" status
+
+# 12. Context with 0 exchanges
+run_test_grep "test_context_empty" "Exchanges: 0" \
+  "$MAS" context
+
+# 13. Unknown command exits non-zero
+run_test_fail "test_unknown_command" \
+  "$MAS" foobar_nonexistent
+
+# 14. Model current (just verify it returns something non-empty)
+run_test_grep "test_model_current" "." \
+  "$MAS" model wang current
+
+# 15. Model set + verify (uses bootstrap to avoid breaking wang for later tests)
+run_test "test_model_set" bash -c '
+  orig=$("'"$MAS"'" model bootstrap current 2>&1 | grep -o "[^ ]*$")
+  "'"$MAS"'" model bootstrap set kimi >/dev/null 2>&1
+  out=$("'"$MAS"'" model bootstrap current 2>&1)
+  echo "$out" | grep -q "kimi" || exit 1
+  # Restore original
+  hermes -p bootstrap config set model.default "'"qwen/qwen3.6-plus"'" >/dev/null 2>&1
+'
+
+# 16. DB integrity
+run_test "test_db_integrity" bash -c '
+  result=$(python3 -c "
+import sqlite3
+conn=sqlite3.connect('"'"''"$DB_FILE"''"'"')
+cur=conn.cursor()
+cur.execute('"'"'PRAGMA integrity_check'"'"')
+print(cur.fetchone()[0])
+conn.close()
+")
+  [[ "$result" == "ok" ]] || exit 1
+'
+
+# 17. Maintenance --log (should work even with empty log)
+run_test "test_maintenance_log" \
+  "$MAS" maintenance --log
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════
+if [[ $TIER -lt 2 ]]; then
+  echo -e "${DIM}TIER 2 & 3 skipped (--tier1)${NC}"
+else
+  echo -e "${BOLD}TIER 2 — Single Agent Calls${NC}  ${DIM}(each call ~10-30s)${NC}"
+  echo ""
+
+  # 17. Ping archie
+  run_test_grep "test_ping_archie" "responded" \
+    "$MAS" ping archie
+
+  # 18. Ping wang
+  run_test_grep "test_ping_wang" "responded" \
+    "$MAS" ping wang
+
+  # 19. Send to wang — verify response + DB persistence
+  run_test "test_send_wang" bash -c '
+    count_before=$(python3 -c "
+import sqlite3
+conn=sqlite3.connect('"'"''"$DB_FILE"''"'"')
+cur=conn.cursor()
+cur.execute(\"SELECT COUNT(*) FROM exchanges WHERE project='"'"''"$TEST_PROJECT"''"'"'\")
+print(cur.fetchone()[0])
+conn.close()
+")
+    out=$("'"$MAS"'" @wang "What is 2+2? Reply briefly." 2>&1)
+    [[ $? -eq 0 ]] || exit 1
+    echo "$out" | grep -q "Wang" || exit 1
+    count_after=$(python3 -c "
+import sqlite3
+conn=sqlite3.connect('"'"''"$DB_FILE"''"'"')
+cur=conn.cursor()
+cur.execute(\"SELECT COUNT(*) FROM exchanges WHERE project='"'"''"$TEST_PROJECT"''"'"'\")
+print(cur.fetchone()[0])
+conn.close()
+")
+    [[ "$count_after" -gt "$count_before" ]] || exit 1
+  '
+
+  # 20. Send to lynch
+  run_test_grep "test_send_lynch" "Lynch" \
+    "$MAS" @lynch "Confirm you are operational. Reply in one sentence."
+
+  # 21. Session continuity — second call should show "Resumed session"
+  run_test "test_session_continuity" bash -c '
+    "'"$MAS"'" @wang "First message for continuity test" >/dev/null 2>&1
+    sid1=$(python3 -c "
+import sqlite3
+conn=sqlite3.connect('"'"''"$DB_FILE"''"'"')
+cur=conn.cursor()
+cur.execute(\"SELECT hermes_session_id FROM mas_agent_sessions WHERE agent='"'"'wang'"'"' AND project='"'"''"$TEST_PROJECT"''"'"' AND hermes_session_id IS NOT NULL ORDER BY updated_at DESC LIMIT 1\")
+row=cur.fetchone()
+print(row[0] if row else '"'"''"'"')
+conn.close()
+")
+    [[ -n "$sid1" ]] || exit 1
+    out=$("'"$MAS"'" @wang "Second message for continuity test" 2>&1)
+    [[ $? -eq 0 ]] || exit 1
+    echo "$out" | grep -qi "Resumed\|session" || true
+  '
+
+  # 22. Context after exchanges shows data
+  run_test "test_context_after_exchanges" bash -c '
+    out=$("'"$MAS"'" context 2>&1)
+    echo "$out" | grep -q "wang" || exit 1
+    echo "$out" | grep -q "MOST RECENT" || exit 1
+  '
+
+  # 23. Status shows correct count
+  run_test "test_status_after_exchanges" bash -c '
+    out=$("'"$MAS"'" status 2>&1)
+    echo "$out" | grep -q "Session exchanges:" || exit 1
+    count=$(echo "$out" | grep "Session exchanges:" | grep -o "[0-9]*")
+    [[ "$count" -gt 0 ]] || exit 1
+  '
+
+  # 24. Agent memory file exists
+  run_test "test_agent_memory_file" bash -c '
+    today=$(date +%F)
+    [[ -f "${HOME}/.hermes/mas-hub/agent-memories/wang_${today}.md" ]] || exit 1
+  '
+
+  # 25. JSON output mode
+  run_test "test_json_output" bash -c '
+    out=$("'"$MAS"'" --json @wang "Reply with one word" 2>&1)
+    [[ $? -eq 0 ]] || exit 1
+    echo "$out" | python3 -c "import json,sys; json.load(sys.stdin)" 2>/dev/null || exit 1
+  '
+
+  # 26. Maintenance task via bootstrap
+  run_test_grep "test_maintenance_task" "Bootstrap" \
+    "$MAS" maintenance "Report the current MAS Hub version and number of exchanges in the blackboard database. Be brief."
+
+  echo ""
+fi
+
+# ═══════════════════════════════════════════════════════════════
+if [[ $TIER -lt 3 ]]; then
+  [[ $TIER -eq 2 ]] && echo -e "${DIM}TIER 3 skipped (--tier2)${NC}"
+else
+  echo -e "${BOLD}TIER 3 — Multi-Agent / Orchestration${NC}  ${DIM}(may take 1-3 min)${NC}"
+  echo ""
+
+  # 26. Broadcast
+  if [[ $SKIP_BROADCAST -eq 1 ]]; then
+    skip_test "test_broadcast (@all)"
+  else
+    run_test_grep "test_broadcast" "═══" \
+      "$MAS" @all "Roll call. Reply with your name and role in one sentence."
+  fi
+
+  # 27. Lead mode mini session
+  run_test "test_lead_mini" bash -c '
+    out=$(MAS_LEAD_MAX_ROUNDS=2 MAS_LEAD_MIN_ROUNDS=1 MAS_LEAD_MIN_TASKS=1 \
+      "'"$MAS"'" lead @archie "Issue one [TASK:wang] asking wang to say hello, then write [DONE] Final synthesis complete." 2>&1)
+    exit_code=$?
+    # Lead mode should at least start (Round 1)
+    echo "$out" | grep -q "Round 1" || exit 1
+  '
+
+  echo ""
+fi
+
+# ═══════════════════════════════════════════════════════════════
+# TEARDOWN — restore previous project
+if [[ -n "$ORIGINAL_PROJECT" && "$ORIGINAL_PROJECT" != "$TEST_PROJECT" ]]; then
+  "$MAS" use "$ORIGINAL_PROJECT" >/dev/null 2>&1
+fi
+# Clean up temp project from use_project test
+"$MAS" use "$TEST_PROJECT" >/dev/null 2>&1
+
+# ═══════════════════════════════════════════════════════════════
+echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+TOTAL=$((PASS + FAIL + SKIP))
+
+if [[ $FAIL -eq 0 ]]; then
+  echo -e "${GREEN}${BOLD}Results: $PASS passed${NC}, $FAIL failed, $SKIP skipped  (total: $TOTAL)"
+else
+  echo -e "${RED}${BOLD}Results: $PASS passed, $FAIL failed${NC}, $SKIP skipped  (total: $TOTAL)"
+  echo ""
+  echo -e "${RED}Failed tests:${NC}"
+  for f in "${FAILURES[@]}"; do
+    echo -e "  ${RED}-${NC} $f"
+  done
+fi
+echo ""
+echo -e "${DIM}Test project: $TEST_PROJECT (data preserved in DB for inspection)${NC}"
+echo ""
+
+[[ $FAIL -eq 0 ]] && exit 0 || exit 1

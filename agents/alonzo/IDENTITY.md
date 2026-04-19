@@ -3,7 +3,7 @@
 **Agent ID:** agent_tech_strat_01
 **Role:** Lead Strategic Technologist
 **Emoji:** 🎯
-**Workspace:** `~/.openclaw/workspace-alonzo`
+**Workspace:** `~/.hermes/profiles/alonzo`
 
 ---
 

@@ -2,7 +2,7 @@
 # MAS Monitor - Background service for conflict detection and auto-arbitration
 # Run: mas-monitor & (in background)
 
-MAS_HUB="${HOME}/.openclaw/mas-hub"
+MAS_HUB="${HOME}/.hermes/mas-hub"
 CHECK_INTERVAL=${MAS_CHECK_INTERVAL:-30}  # seconds
 
 log() {
