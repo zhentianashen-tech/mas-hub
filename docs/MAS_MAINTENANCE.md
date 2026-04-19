@@ -1,294 +1,353 @@
-# MAS Hub — Setup & Maintenance Guide
+# MAS Hub — Maintenance Guide
 
-**Maintainer:** Bob 🔧  
-**System:** Multi-Agent System (MAS) Hub  
-**Version:** 1.0.0  
-**Last Updated:** 2026-03-22
-
----
-
-## 1. System Overview
-
-The MAS Hub enables AI agents (Archie, Wang, Lynch, Bootstrap) to collaborate through message passing, shared state, and workflow orchestration.
-
-### Architecture
-
-```
-User → mas CLI → Agent Pool
-                  ├── Archie (General)
-                  ├── Wang (Financial)
-                  ├── Lynch (Arbitrator)
-                  └── Bootstrap (Maintainer)
-```
+**Maintainer:** Bob 🔧
+**System:** MAS Hub v4.4.0
+**Last Updated:** 2026-04-19
 
 ---
 
-## 2. Directory Structure
+## System Overview
+
+MAS Hub is a Bash + Python CLI orchestrating AI agents through a shared SQLite blackboard. The main script is `bin/mas` (~1500 lines). Runtime data lives at `~/.openclaw/mas-hub/` and is never part of the repo.
+
+```
+User → mas CLI (bin/mas)
+         ├── SQLite blackboard (shared_context.db)
+         ├── state.json (current project + domain)
+         ├── config.json (agent definitions)
+         └── Agent Pool (via OpenClaw gateway)
+               ├── Archie  — Facilitator / Lead
+               ├── Wang    — Financial Researcher
+               ├── Lynch   — Auditor
+               ├── Alonzo  — Tech Strategy
+               └── Bootstrap — IT Maintainer (you)
+```
+
+---
+
+## Directory Structure
 
 ```
 ~/.openclaw/mas-hub/
-├── config.json              # System configuration
-├── inbox/                   # Agent mailboxes
-│   ├── archie/
-│   ├── wang/
-│   ├── lynch/
-│   └── bootstrap/
-├── outbox/                  # Agent responses
-├── blackboard/              # Shared context
-├── workflows/               # Active workflows
-├── logs/                    # System logs
-└── templates/               # Workflow templates
+├── blackboard/
+│   ├── shared_context.db       # SQLite — all exchanges, sessions, meta
+│   └── .lock                   # Lock dir (mkdir-based). Auto-removed >120s
+├── state.json                  # Current project, session ID, domain
+├── config.json                 # Live agent config (overrides repo config.json)
+├── agent-memories/             # Per-agent daily memory: {agent}_{YYYY-MM-DD}.md
+├── projects/                   # Agent output files, per project
+└── logs/
+    ├── orchestrator.log        # Main log
+    └── kimi-maintenance.log    # Automated maintenance log
+
+~/Projects/mas-hub/             # Source repo
+├── bin/mas                     # Main orchestrator
+├── scripts/mas_context.py      # Context assembly (Python)
+├── config/topics.*.json        # Topic keyword configs
+└── templates/domain/*.md       # Stage gate templates
 ```
 
 ---
 
-## 3. Installation & Setup
+## Health Check
 
-### Prerequisites
-- OpenClaw CLI installed
-- Python 3 for JSON parsing
-- zsh/bash shell
-
-### Setup Commands
+Run this first whenever something seems broken:
 
 ```bash
-# Create directory structure
-mkdir -p ~/.openclaw/mas-hub/{inbox/{archie,wang,lynch,bootstrap},outbox,blackboard,workflows,logs,templates}
-
-# Make scripts executable
-chmod +x ~/Projects/mas-hub/bin/mas
-chmod +x ~/Projects/mas-hub/bin/mas-monitor
-
-# Verify installation
-mas help
-mas status
+mas doctor          # Full diagnostics
+mas ping archie     # Roundtrip agent test
+mas ping wang
+mas version         # Confirm version
+mas status          # Current project / session state
 ```
 
 ---
 
-## 4. Daily Maintenance Tasks
+## Common Breakage Scenarios
 
-### Morning Health Check
+### 1. Stale Lock — All commands hang or "another process is running"
+
+The lock is a directory at `~/.openclaw/mas-hub/blackboard/.lock`. It is auto-removed if older than 120 seconds, but a crash can leave a fresh one.
 
 ```bash
-#!/bin/bash
-# Run: ./daily-check.sh
+# Check lock age
+ls -la ~/.openclaw/mas-hub/blackboard/.lock
 
-echo "=== MAS Hub Daily Check ==="
-
-# 1. Agent status
-mas status | head -15
-
-# 2. Disk usage
-du -sh ~/.openclaw/mas-hub/* | sort -hr
-
-# 3. Monitor status
-mas-monitor-status
-
-# 4. Recent errors
-tail -20 ~/.openclaw/mas-hub/logs/orchestrator.log | grep ERROR || echo "No errors"
-
-echo "=== Check Complete ==="
+# Remove it
+rmdir ~/.openclaw/mas-hub/blackboard/.lock
 ```
 
-### Log Rotation
+### 2. Agent Returns Empty Response
 
 ```bash
-#!/bin/bash
-# Run daily: ./rotate-logs.sh
+# Step 1: Check connectivity
+mas ping wang
 
-LOG_DIR="$HOME/.openclaw/mas-hub/logs"
-DATE=$(date +%Y%m%d)
+# Step 2: Check gateway
+openclaw gateway status
+openclaw gateway start      # if not running
 
-# Compress old logs
-find "$LOG_DIR" -name "*.log" -mtime +0 -exec gzip {} \;
-
-# Move to archive
-mkdir -p "$LOG_DIR/archive/$DATE"
-find "$LOG_DIR" -name "*.gz" -exec mv {} "$LOG_DIR/archive/$DATE/" \;
-
-# Delete archives older than 30 days
-find "$LOG_DIR/archive" -type d -mtime +30 -exec rm -rf {} \; 2>/dev/null
-
-echo "Logs rotated: $DATE"
+# Step 3: Switch to a working model
+mas model wang set gpt-4.1-mini
+mas model wang set claude-sonnet-4.6
+mas ping wang               # verify after switch
 ```
 
-### Inbox Cleanup
+### 3. "mas: command not found"
 
 ```bash
-#!/bin/bash
-# Remove messages older than 7 days
+# Ensure ~/bin is in PATH
+echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 
-for agent in archie wang lynch bootstrap; do
-    find ~/.openclaw/mas-hub/inbox/$agent -name "*.json" -mtime +7 -delete
-done
+# Re-run installer if symlink is missing
+cd ~/Projects/mas-hub && ./install.sh
+
+# Or symlink manually
+ln -sf ~/Projects/mas-hub/bin/mas ~/bin/mas
+```
+
+### 4. Context Not Being Shared Between Agents
+
+Symptoms: agents answer as if in a fresh conversation with no prior context.
+
+```bash
+# Check current project
+mas project
+
+# Verify database has exchanges
+sqlite3 ~/.openclaw/mas-hub/blackboard/shared_context.db \
+  "SELECT COUNT(*) FROM exchanges WHERE mas_session_id = (SELECT current_mas_session_id FROM mas_meta LIMIT 1);"
+
+# If 0 exchanges — check that mas_session_id in state.json is not empty
+cat ~/.openclaw/mas-hub/state.json
+
+# If state.json is corrupted, reset
+mas new <project-name>
+```
+
+### 5. Context Relevance Scoring Broken (All Scores Show 0)
+
+This means `current_message` is not being passed to `mas_context.py`. Check the call in `bin/mas`:
+
+```bash
+grep -n "get_context_for_agent" ~/Projects/mas-hub/bin/mas
+```
+
+The call should look like:
+```bash
+context=$(get_context_for_agent "$CURRENT_SID" "text" "$message")
+```
+If `"$message"` is absent, topic/entity scoring will be dead and all exchanges will score ≤ 2.
+
+### 6. Lead Mode Exits Too Early / [DONE] Accepted at Round 2
+
+The premature `[DONE]` guard uses `min_rounds` and `min_tasks`. Defaults are 7 rounds / 5 tasks. Check:
+
+```bash
+grep -n "min_rounds\|min_tasks" ~/Projects/mas-hub/bin/mas
+```
+
+Override per-run:
+```bash
+MAS_LEAD_MIN_ROUNDS=3 MAS_LEAD_MAX_ROUNDS=8 mas lead @archie "quick test"
+```
+
+### 7. Lead Mode Hangs — Watchdog Not Firing
+
+Lead mode has two timeouts: soft (180s) and hard (480s). If a run hangs past hard timeout without escalating to Bootstrap, the watchdog process may have died.
+
+```bash
+# Check for orphaned background processes
+ps aux | grep "mas lead\|openclaw"
+
+# Kill and restart
+pkill -f "mas lead"
+
+# Tail the log to see where it stalled
+tail -50 ~/.openclaw/mas-hub/logs/orchestrator.log
+```
+
+### 8. [PAUSE] Not Prompting — Run Continues Without Waiting
+
+The `[PAUSE]` detection uses `grep -q '\[PAUSE\]'` on lead_text. If Archie's response encoding strips brackets, the pattern won't match.
+
+```bash
+# Check what the raw response looks like
+tail -100 ~/.openclaw/mas-hub/logs/orchestrator.log | grep -i pause
+```
+
+If brackets are being HTML-escaped (`&#91;PAUSE&#93;`), it's an OpenClaw response encoding issue — check the gateway version.
+
+### 9. Domain Template Not Loading / Wrong Stage Gate
+
+```bash
+# Check current domain
+cat ~/.openclaw/mas-hub/state.json | python3 -c "import json,sys; print(json.load(sys.stdin).get('domain','not set'))"
+
+# Check template file exists
+ls ~/Projects/mas-hub/templates/domain/
+
+# Test template loading manually
+python3 -c "
+with open('$HOME/Projects/mas-hub/templates/domain/finance.md') as f:
+    content = f.read()
+parts = content.split('---')
+for p in parts:
+    lines = p.strip().split('\n')
+    print('SECTION:', lines[0] if lines else '(empty)')
+"
+```
+
+If domain is missing from state.json, it defaults to `finance`. To set it:
+```bash
+mas new <project> --domain default
+```
+
+### 10. Topic Keywords Not Loading (Relevance Scoring Uses Fallback Dict)
+
+```bash
+# Verify config files exist
+ls ~/Projects/mas-hub/config/topics.*.json
+
+# Test loader directly
+python3 ~/Projects/mas-hub/scripts/mas_context.py \
+  ~/.openclaw/mas-hub/blackboard/shared_context.db \
+  <session_id> <project> text "research earnings" finance
+```
+
+If you see `HIGH`/`MEDIUM` scores on relevant exchanges, scoring is working. If everything is `LOW`, the topic files may be missing or malformed.
+
+```bash
+python3 -c "import json; print(json.load(open('$HOME/Projects/mas-hub/config/topics.finance.json')))"
+```
+
+### 11. Database Corruption / SQLite Errors
+
+```bash
+# Integrity check
+sqlite3 ~/.openclaw/mas-hub/blackboard/shared_context.db "PRAGMA integrity_check;"
+
+# If corrupt — backup and recreate
+cp ~/.openclaw/mas-hub/blackboard/shared_context.db \
+   ~/.openclaw/mas-hub/blackboard/shared_context.db.bak.$(date +%Y%m%d)
+rm ~/.openclaw/mas-hub/blackboard/shared_context.db
+mas new <project-name>   # Re-initializes the DB
+```
+
+### 12. Agent Output Files in Wrong Location
+
+Wang (when delegated by Archie) sometimes saves to `~/.openclaw/workspace/projects/` instead of `~/.openclaw/mas-hub/projects/<project>/`.
+
+This is an agent instruction issue, not a system bug. Fix by re-running the task and explicitly including in the message:
+> "Save all output to `~/.openclaw/mas-hub/projects/<project_name>/`"
+
+---
+
+## Log Maintenance
+
+```bash
+# View live log
+tail -f ~/.openclaw/mas-hub/logs/orchestrator.log
+
+# Errors only
+grep ERROR ~/.openclaw/mas-hub/logs/orchestrator.log | tail -30
+
+# Rotate logs older than 7 days
+find ~/.openclaw/mas-hub/logs -name "*.log" -mtime +7 -exec gzip {} \;
+find ~/.openclaw/mas-hub/logs -name "*.gz" -mtime +30 -delete
 ```
 
 ---
 
-## 5. Weekly Maintenance
-
-### Full System Check
+## Database Maintenance
 
 ```bash
-#!/bin/bash
-# Run weekly: ./weekly-maintenance.sh
+# Row counts per session
+sqlite3 ~/.openclaw/mas-hub/blackboard/shared_context.db \
+  "SELECT mas_session_id, COUNT(*) as exchanges FROM exchanges GROUP BY mas_session_id ORDER BY exchanges DESC;"
 
-echo "=== Weekly Maintenance ==="
+# Disk usage
+du -sh ~/.openclaw/mas-hub/blackboard/shared_context.db
 
-# 1. Archive old workflows (14+ days)
-find ~/.openclaw/mas-hub/workflows -maxdepth 1 -type d -mtime +14 \
-    -exec mv {} ~/.openclaw/mas-hub/archive/workflows/ \;
+# VACUUM (reclaim space after bulk deletes)
+sqlite3 ~/.openclaw/mas-hub/blackboard/shared_context.db "VACUUM;"
 
-# 2. Clean outbox (7+ days)
-find ~/.openclaw/mas-hub/outbox -name "*.json" -mtime +7 -delete
-
-# 3. Validate configs
-openclaw config validate
-
-# 4. Test all agents
-for agent in wang lynch bootstrap; do
-    echo -n "Testing $agent... "
-    openclaw agent --agent "$agent" --message "ping" --json >/dev/null 2>&1 && echo "OK" || echo "FAIL"
-done
-
-# 5. Backup configs
-BACKUP_DIR="$HOME/.openclaw/backups/$(date +%Y%m%d)"
-mkdir -p "$BACKUP_DIR"
-cp ~/.openclaw/openclaw.json "$BACKUP_DIR/"
-cp ~/.openclaw/mas-hub/config.json "$BACKUP_DIR/"
-
-echo "Backup saved: $BACKUP_DIR"
-echo "=== Maintenance Complete ==="
+# Delete exchanges from old sessions (>90 days) — careful
+sqlite3 ~/.openclaw/mas-hub/blackboard/shared_context.db \
+  "DELETE FROM exchanges WHERE timestamp < datetime('now', '-90 days');"
 ```
 
 ---
 
-## 6. Troubleshooting
-
-### Agent Not Responding
+## Model Switching Reference
 
 ```bash
-# Check agent exists
-openclaw agents list | grep <agent>
-
-# Validate config
-openclaw config validate
-
-# Test directly
-openclaw agent --agent <id> --message "test" --json
+mas model <agent> set <alias>   # Switch model
+mas models                      # Show all current models
+mas ping <agent>                # Verify new model responds
 ```
 
-### MAS CLI Not Found
+| Alias | Model |
+|-------|-------|
+| `claude-opus-4` | `zenmux/anthropic/claude-opus-4` |
+| `claude-sonnet-4.6` | `zenmux/anthropic/claude-sonnet-4-6` |
+| `gpt-4.1-mini` | `zenmux/openai/gpt-4.1-mini` |
+| `qwen-3.5-plus` | `zenmux/qwen/qwen3.5-plus` |
+| `kimi` | `moonshot/kimi-k2.5` |
+| `minimax` | `minimax/MiniMax-M2.7` |
+
+---
+
+## Environment Variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `MAS_LEAD_MIN_ROUNDS` | `7` | Minimum rounds before [DONE] is accepted |
+| `MAS_LEAD_MIN_TASKS` | `5` | Minimum completed tasks before [DONE] |
+| `MAS_LEAD_MAX_ROUNDS` | `15` | Hard ceiling on lead mode rounds |
+| `MAS_TIMEOUT` | `120` | Agent response timeout (seconds) |
+| `MAS_DEBUG` | `0` | Enable debug logging |
+| `TUI_MODE` | `0` | Strip ANSI, wrap output in `---[Agent]---` delimiters |
+
+---
+
+## Session Reset
 
 ```bash
-# Add to PATH
-export PATH="$HOME/Projects/mas-hub/bin:$PATH"
-source ~/.zshrc
-```
+# Reset current session (keep project, start fresh conversation)
+mas reset
 
-### Monitor Issues
+# Clear ALL agent sessions (agents start with no prior context)
+mas session clear
 
-```bash
-# Check if running
-pgrep -f mas-monitor
-
-# View logs
-tail -50 ~/.openclaw/mas-hub/logs/monitor.log
-
-# Restart
-mas-monitor-stop
-mas-monitor-start
-```
-
-### Disk Space Full
-
-```bash
-# Check usage
-du -sh ~/.openclaw/mas-hub/* | sort -hr
-
-# Clean old files
-find ~/.openclaw/mas-hub/logs -name "*.gz" -delete
-find ~/.openclaw/mas-hub/outbox -name "*.json" -mtime +3 -delete
+# Start a brand new project
+mas new <project-name> [--domain finance|default]
 ```
 
 ---
 
-## 7. Configuration Reference
+## config.json Reference
 
-### MAS Hub Config
+Live config at `~/.openclaw/mas-hub/config.json`. Repo has a reference copy at `config.json`.
 
-Location: `~/.openclaw/mas-hub/config.json`
+Key fields per agent: `name`, `role`, `strengths` (used by `build_team_description()` to generate lead briefing), `model`, `workspace`.
 
-Key settings:
-- Agent definitions (4 agents)
-- Conflict detection interval: 30 seconds
-- Variance threshold: 5%
-- Log retention: 30 days
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| MAS_HUB | ~/.openclaw/mas-hub | Hub directory |
-| MAS_DEBUG | 0 | Debug logging |
-| MAS_CHECK_INTERVAL | 30 | Monitor interval (sec) |
+After editing config, no restart needed — `bin/mas` reads it fresh each invocation.
 
 ---
 
-## 8. Agent Reference
+## Agent Roster
 
-| Agent | Role | Model | Workspace |
-|-------|------|-------|-----------|
-| Archie | General | moonshot/kimi-k2.5 | workspace/ |
-| Wang | Financial | zenmux/claude-opus-4 | workspace-wang/ |
-| Lynch | Arbitrator | zenmux/gpt-4.1-mini | workspace-lynch/ |
-| Bootstrap | Maintainer | zenmux/claude-opus-4.6 | workspace-bootstrap/ |
+| Agent | Role | Default Model | Workspace |
+|-------|------|---------------|-----------|
+| `archie` | Facilitator / Lead | `moonshot/kimi-k2.5` | `~/.openclaw/workspace/` |
+| `wang` | Financial Researcher | `zenmux/anthropic/claude-opus-4` | `~/.openclaw/workspace-wang/` |
+| `lynch` | Auditor / Validator | `zenmux/openai/gpt-4.1-mini` | `~/.openclaw/workspace-lynch/` |
+| `alonzo` | Tech Strategy | `minimax/MiniMax-M2.7` | `~/.openclaw/workspace-alonzo/` |
+| `bootstrap` | IT Maintainer | `zenmux/qwen/qwen3.5-plus` | `~/.openclaw/workspace-bootstrap/` |
 
----
-
-## 9. Quick Commands
-
-```bash
-# Message agents
-mas @archie "Hello"
-mas @wang "Research Tesla"
-mas @lynch "Validate this"
-mas @all "Broadcast"
-
-# Workflows
-mas workflow research "Topic"
-mas debate "Topic"
-mas smart "Query"
-
-# Maintenance
-mas status
-mas-monitor-start
-mas-monitor-stop
-```
+Sample workspace configs (SOUL.md, IDENTITY.md, MEMORY.md): `~/Projects/mas-hub/agents/`
 
 ---
 
-## 10. Maintenance Checklist
-
-### Daily
-- [ ] Check agent status
-- [ ] Verify monitor running
-- [ ] Review error logs
-- [ ] Check disk usage
-
-### Weekly
-- [ ] Archive old workflows
-- [ ] Rotate logs
-- [ ] Clean inbox
-- [ ] Backup configs
-- [ ] Test all agents
-
-### Monthly
-- [ ] Update documentation
-- [ ] Clean old archives
-- [ ] Test disaster recovery
-
----
-
-*Maintained by Bootstrap 🔧 | Last updated: 2026-03-22*
+*Maintained by Bootstrap 🔧 — update this file whenever a new failure mode is discovered.*
