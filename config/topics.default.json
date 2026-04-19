@@ -1,0 +1,11 @@
+{
+  "research":    ["analyze", "research", "study", "investigate", "deep dive", "report", "analysis", "examine", "explore"],
+  "audit":       ["verify", "validate", "check", "audit", "confirm", "fact", "source", "citation", "review"],
+  "risk":        ["risk", "downside", "threat", "concern", "uncertainty", "caveat", "limitation"],
+  "competitive": ["competitive", "competition", "market share", "rival", "versus", "competitor", "comparison"],
+  "synthesis":   ["synthesize", "summarize", "integrate", "conclude", "findings", "summary", "overall"],
+  "evidence":    ["evidence", "data", "source", "primary", "secondary", "citation", "reference", "support"],
+  "gaps":        ["missing", "unknown", "unclear", "pending", "unresolved", "gap", "incomplete", "needed"],
+  "technical":   ["technical", "implementation", "architecture", "system", "infrastructure", "mechanism"],
+  "causal":      ["cause", "effect", "impact", "result", "consequence", "because", "leads to", "drives"]
+}

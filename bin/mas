@@ -199,7 +199,7 @@ PY
 init_state(){
   if [[ ! -f "$STATE_FILE" ]]; then
     cat > "$STATE_FILE" <<EOF
-{"current_project":"default","current_mas_session_id":"mas-default-$(date +%Y%m%d)","created":"$(date -u +"%Y-%m-%dT%H:%M:%SZ")"}
+{"current_project":"default","current_mas_session_id":"mas-default-$(date +%Y%m%d)","domain":"finance","created":"$(date -u +"%Y-%m-%dT%H:%M:%SZ")"}
 EOF
   fi
 }
@@ -214,6 +214,7 @@ import json
 path="$STATE_FILE"
 with open(path) as f: data=json.load(f)
 data['current_project']="$1"; data['current_mas_session_id']="$2"
+if "$3": data['domain']="$3"
 with open(path,'w') as f: json.dump(data,f,indent=2)
 PY
 }
@@ -222,15 +223,23 @@ get_current_mas_session_id(){ get_state_field current_mas_session_id; }
 
 # ─── Project management ───
 new_project(){
-  local raw="$1"; [[ -z "$raw" ]] && { emit_error "usage" "Usage: mas new <project-name>"; return 1; }
+  # Parse: mas new <project-name> [--domain <domain>]
+  local raw="" domain="finance"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --domain) domain="$2"; shift 2 ;;
+      *) raw="$1"; shift ;;
+    esac
+  done
+  [[ -z "$raw" ]] && { emit_error "usage" "Usage: mas new <project-name> [--domain <domain>]"; return 1; }
   local project; project=$(slugify "$raw")
   local sid="mas-${project}-$(date +%Y%m%d-%H%M%S)"
-  set_state_fields "$project" "$sid"
-  CURRENT_PROJECT="$project"; CURRENT_SID="$sid"
+  set_state_fields "$project" "$sid" "$domain"
+  CURRENT_PROJECT="$project"; CURRENT_SID="$sid"; CURRENT_DOMAIN="$domain"
   if [[ "$OUTPUT_JSON" -eq 1 ]]; then
-    printf '{"status":"ok","project":"%s","mas_session_id":"%s"}\n' "$project" "$sid"
+    printf '{"status":"ok","project":"%s","mas_session_id":"%s","domain":"%s"}\n' "$project" "$sid" "$domain"
   else
-    echo -e "${GREEN}✓${NC} Started project '${BOLD}$project${NC}' with MAS session: $sid"
+    echo -e "${GREEN}✓${NC} Started project '${BOLD}$project${NC}' [domain: ${CYAN}$domain${NC}] with MAS session: $sid"
   fi
 }
 
@@ -245,7 +254,7 @@ row=cur.fetchone(); conn.close(); print(row[0] if row else '')
 PY
 )
   [[ -z "$sid" ]] && sid="mas-${project}-$(date +%Y%m%d-%H%M%S)"
-  set_state_fields "$project" "$sid"
+  set_state_fields "$project" "$sid" ""
   CURRENT_PROJECT="$project"; CURRENT_SID="$sid"
   if [[ "$OUTPUT_JSON" -eq 1 ]]; then
     printf '{"status":"ok","project":"%s","mas_session_id":"%s"}\n' "$project" "$sid"
@@ -300,9 +309,8 @@ PY
 
 # ─── Context retrieval ───
 get_context_for_agent(){
-  local mas_session_id="$1" mode="${2:-text}"
-  # Use adaptive context assembly with relevance scoring
-  python3 "${MAS_HUB_SRC}/scripts/mas_context.py" "$DB_FILE" "$mas_session_id" "$CURRENT_PROJECT" "$mode"
+  local mas_session_id="$1" mode="${2:-text}" current_msg="${3:-}" domain="${4:-${CURRENT_DOMAIN:-finance}}"
+  python3 "${MAS_HUB_SRC}/scripts/mas_context.py" "$DB_FILE" "$mas_session_id" "$CURRENT_PROJECT" "$mode" "$current_msg" "$domain"
 }
 
 
@@ -510,7 +518,7 @@ send_to_agent(){
   # Stage 1: Lock + session setup
   acquire_lock || return 1
   agent_session_id=$(get_or_create_agent_session "$CURRENT_SID" "$CURRENT_PROJECT" "$agent" "$agent_id")
-  context=$(get_context_for_agent "$CURRENT_SID")
+  context=$(get_context_for_agent "$CURRENT_SID" "text" "$message")
   release_lock
 
   local req_file; req_file=$(mktemp)
@@ -637,7 +645,7 @@ send_to_agent_silent(){
 
   acquire_lock || return 1
   agent_session_id=$(get_or_create_agent_session "$CURRENT_SID" "$CURRENT_PROJECT" "$agent" "$agent_id")
-  context=$(get_context_for_agent "$CURRENT_SID")
+  context=$(get_context_for_agent "$CURRENT_SID" "text" "$message")
   release_lock
 
   local req_file; req_file=$(mktemp)
@@ -767,7 +775,9 @@ cmd_lead(){
   local lead_name; lead_name=$(get_agent_name "$lead_agent")
 
   # ─── Controls ───
-  local max_rounds="${MAS_LEAD_MAX_ROUNDS:-10}"
+  local max_rounds="${MAS_LEAD_MAX_ROUNDS:-15}"
+  local min_rounds="${MAS_LEAD_MIN_ROUNDS:-7}"
+  local min_tasks="${MAS_LEAD_MIN_TASKS:-5}"
   local soft_timeout="${MAS_LEAD_SOFT_TIMEOUT:-300}"
   local hard_timeout="${MAS_LEAD_HARD_TIMEOUT:-900}"
   local escalate_agent="${MAS_LEAD_ESCALATE_AGENT:-bootstrap}"
@@ -939,24 +949,67 @@ ESCEOF
     fi
   }
 
+  # ─── Helper: build team description from config.json ───
+  build_team_description(){
+    python3 <<PY
+import json
+try:
+    with open("$CONFIG_FILE") as f: data=json.load(f)
+    for name, a in (data.get('agents') or {}).items():
+        if name == 'bootstrap': continue
+        strengths = ', '.join(a.get('strengths') or [])
+        role = a.get('role', name)
+        print(f"- {a.get('name', name)} ({role}): {strengths}")
+except Exception: pass
+PY
+  }
+
+  # ─── Helper: load a section from the domain stage-gate template ───
+  load_domain_template(){
+    local section="$1"
+    local domain="${CURRENT_DOMAIN:-finance}"
+    local tmpl_file="${MAS_HUB_SRC}/templates/domain/${domain}.md"
+    [[ ! -f "$tmpl_file" ]] && tmpl_file="${MAS_HUB_SRC}/templates/domain/default.md"
+    python3 <<PY
+try:
+    with open("$tmpl_file") as f: content = f.read()
+    sections = {}
+    for part in content.split('---'):
+        part = part.strip()
+        lines = part.split('\n')
+        if lines:
+            key = lines[0].strip()
+            body = '\n'.join(lines[1:]).strip()
+            sections[key] = body
+    print(sections.get('$section', ''))
+except Exception as e:
+    print(f'[template load error: {e}]')
+PY
+  }
+
   # ─── Initial briefing ───
+  local _team_desc; _team_desc=$(build_team_description)
+  local _stage_gate; _stage_gate=$(load_domain_template "STAGE_GATE")
   local lead_prompt="You are the lead facilitator for this MAS research project.
 
 TEAM:
-- Wang (researcher): Deep research, financial analysis, data extraction
-- Lynch (auditor): Conflict resolution, fact validation, evidence weighing
-- Bootstrap (IT): System maintenance, infrastructure, escalation handler
+$_team_desc
 
 YOUR ROLE: Direct the team. Issue tasks to other agents. Synthesize results.
 
 TASK PROTOCOL:
 When you need another agent to do something, write a task block:
-  [TASK:wang] Your instruction to Wang here
-  [TASK:lynch] Your instruction to Lynch here
+  [TASK:wang] Your instruction here
+  [TASK:lynch] Your instruction here
 
 You can issue multiple tasks in one response.
 When all research is complete and you have a final answer, write:
   [DONE] Your final synthesis/conclusion here
+
+When you reach a decision point that requires the user's strategic direction before you can proceed, write:
+  [PAUSE] Your question or description of what's needed
+
+Use [PAUSE] when: the research reveals unexpected findings that change the scope, you need the user to choose between divergent paths, or the next step requires information only the user has. Do NOT use [PAUSE] for routine research gaps — use [MISSING:] for those. A [PAUSE] halts the run and waits indefinitely for user input before continuing.
 
 TIMEOUT HANDLING:
 - If an agent times out or fails, you will receive a timeout/error report
@@ -964,19 +1017,7 @@ TIMEOUT HANDLING:
 - Use [TASK:bootstrap] to investigate infrastructure issues
 - DO NOT write [DONE] on your own — only when user explicitly requests final synthesis
 
-STAGE GATE — DO NOT STOP PREMATURELY:
-This project follows a MANDATORY 5-stage research protocol:
-  Stage 1: External Thesis Map (gather external views before modeling)
-  Stage 2: DCF Valuation Model (build your own model)
-  Stage 3: Follow-Up Research / Deep-Dive (fill gaps, additional analysis)
-  Stage 4: Lynch Audit (independent validation of your work)
-  Stage 5: Final Synthesis (integrate audit findings, produce final report)
-
-CRITICAL RULES:
-- Do NOT write [DONE] until Stage 4 (Lynch Audit) is COMPLETE
-- Do NOT write [DONE] if there are still [MISSING:] items unresolved
-- Only write [DONE] after: Wang completes research → Lynch audits → You synthesize
-- If unsure whether to continue, ALWAYS lean toward more research, not less
+$_stage_gate
 
 PROJECT LIFECYCLE — ABSOLUTE RULES:
 - Projects are NEVER complete until the USER explicitly closes them
@@ -1013,14 +1054,8 @@ BRIEFING: $briefing"
     # If we have task results from previous round, prepend them
     if [[ -n "$task_results" ]]; then
       local task_report; task_report=$(build_task_report)
-      lead_message="STAGE GATE REMINDER: Continue working through all 5 stages.
-- Stage 1 (External Thesis): Done if external research gathered
-- Stage 2 (DCF Model): Done if valuation model built
-- Stage 3 (Follow-Up Research): Continue if gaps remain
-- Stage 4 (Lynch Audit): Must be dispatched after Stage 3
-- Stage 5 (Final Synthesis): Only after Lynch audit complete
-
-Do NOT write [DONE] until Lynch has audited and you have synthesized findings.
+      local _reminder; _reminder=$(load_domain_template "STAGE_GATE_REMINDER")
+      lead_message="$_reminder
 
 $task_report
 
@@ -1067,16 +1102,16 @@ If any agent timed out or failed, decide: reassign, proceed with partial data, o
 
     # Check for [DONE] — with premature detection
     if echo "$lead_text" | grep -q '\[DONE\]'; then
-      # Check if [DONE] is premature (early rounds, no audit, etc.)
-      if [[ $round -lt 5 ]] || [[ $total_tasks_completed -lt 3 ]]; then
+      # Check if [DONE] is premature (configurable thresholds)
+      if [[ $round -lt $min_rounds ]] || [[ $total_tasks_completed -lt $min_tasks ]]; then
         echo -e "${YELLOW}⚠ WARNING: $lead_name attempted premature [DONE]${NC}"
-        echo -e "${DIM}Round: $round (min recommended: 5) | Tasks: $total_tasks_completed (min: 3)${NC}"
-        echo -e "${YELLOW}→ Continuing session. Archie has been nudged to continue working.${NC}"
+        echo -e "${DIM}Round: $round (min: $min_rounds) | Tasks: $total_tasks_completed (min: $min_tasks)${NC}"
+        echo -e "${YELLOW}→ Continuing session. Lead agent nudged to keep working.${NC}"
         echo ""
-        
+
         # Nudge lead agent to continue
-        lead_message="You attempted to write [DONE] too early. The project is NOT complete. Continue working through all 5 stages. Issue more [TASK:agent] blocks to complete the research. Do NOT write [DONE] until all stages are complete and user explicitly requests it."
-        log WARN "stage=premature_done_detected lead=$lead_agent round=$round tasks=$total_tasks_completed"
+        lead_message="You attempted to write [DONE] too early (round $round of minimum $min_rounds, $total_tasks_completed tasks of minimum $min_tasks). The project is NOT complete. Continue working through all stages. Issue more [TASK:agent] blocks. Do NOT write [DONE] until all stages are complete and user explicitly requests it."
+        log WARN "stage=premature_done_detected lead=$lead_agent round=$round min_rounds=$min_rounds tasks=$total_tasks_completed min_tasks=$min_tasks"
         continue
       fi
       
@@ -1096,6 +1131,38 @@ If any agent timed out or failed, decide: reassign, proceed with partial data, o
       log INFO "stage=lead_done lead=$lead_agent rounds=$round project=$CURRENT_PROJECT tasks_dispatched=$total_tasks_dispatched tasks_completed=$total_tasks_completed tasks_failed=$total_tasks_failed tasks_timeout=$total_tasks_timedout escalations=$escalation_count"
       rm -f "$task_ledger"
       return 0
+    fi
+
+    # Check for [PAUSE] — blocking user input, no timeout
+    if echo "$lead_text" | grep -q '\[PAUSE\]'; then
+      local pause_question
+      pause_question=$(printf '%s' "$lead_text" | python3 -c "
+import sys, re
+text = sys.stdin.read()
+m = re.search(r'\[PAUSE\]\s*(.*?)(?=\n\n|\[TASK:|\[DONE\]|\Z)', text, re.DOTALL)
+print(m.group(1).strip() if m else 'Input required to continue.')
+")
+      echo ""
+      echo -e "${BOLD}${YELLOW}╔═══════════════════════════════════════════════════════════════╗${NC}"
+      echo -e "${BOLD}${YELLOW}║  ⏸  PAUSED — $lead_name is waiting for your input              ${NC}"
+      echo -e "${BOLD}${YELLOW}╚═══════════════════════════════════════════════════════════════╝${NC}"
+      echo ""
+      echo -e "${CYAN}$lead_name:${NC}"
+      echo "$pause_question" | sed 's/^/  /'
+      echo ""
+      echo -e "${DIM}Type your response and press Enter. No timeout — the session will resume when you reply.${NC}"
+      echo -ne "${BOLD}You > ${NC}"
+      local user_pause_input
+      IFS= read -r user_pause_input
+      echo ""
+      log INFO "stage=lead_pause round=$round lead=$lead_agent"
+
+      lead_message="USER INPUT (responding to your [PAUSE] request in round $round):
+
+$user_pause_input
+
+Resume from where you paused. Continue issuing [TASK:agent] blocks to progress through the remaining stages, or write [DONE] if all stages are now complete and synthesis is ready."
+      continue
     fi
 
     # Parse [TASK:agent] blocks
@@ -1435,6 +1502,7 @@ ${BOLD}AGENT MESSAGING:${NC}
                                   lead agent directs via [TASK:agent] blocks
                                   auto-dispatched with timeout tracking
                                   auto-escalation on stall, partial synthesis
+                                  [PAUSE] token blocks run, waits for your input
 
 ${BOLD}MODEL SWITCHING:${NC}
   mas model <agent>               Interactive model picker
@@ -1451,11 +1519,18 @@ ${BOLD}OPTIONS:${NC}
   --json                          Machine-readable JSON output
   --no-color                      Disable ANSI colors
   MAS_TIMEOUT=<seconds>           Override agent call timeout (default: 600)
-  MAS_LEAD_MAX_ROUNDS=<n>         Max facilitation rounds (default: 10)
-  MAS_LEAD_SOFT_TIMEOUT=<s>       Soft timeout per task in seconds (default: 180)
-  MAS_LEAD_HARD_TIMEOUT=<s>       Hard timeout — triggers escalation (default: 480)
+  MAS_LEAD_MAX_ROUNDS=<n>         Max facilitation rounds (default: 15)
+  MAS_LEAD_MIN_ROUNDS=<n>         Min rounds before [DONE] allowed (default: 7)
+  MAS_LEAD_MIN_TASKS=<n>          Min tasks completed before [DONE] allowed (default: 5)
+  MAS_LEAD_SOFT_TIMEOUT=<s>       Soft timeout per task in seconds (default: 300)
+  MAS_LEAD_HARD_TIMEOUT=<s>       Hard timeout — triggers escalation (default: 900)
   MAS_LEAD_ESCALATE_AGENT=<name>  Agent for stall escalation (default: bootstrap)
   MAS_LEAD_STALL_ACTION=<action>  On stall: partial|abort (default: partial)
+
+${BOLD}DOMAIN:${NC}
+  mas new <project> --domain <domain>   Set project domain (default: finance)
+  Domains: finance, default (generic), or any name matching templates/domain/<name>.md
+  Domain controls: stage gate protocol, topic keywords for context relevance scoring
 
 ${BOLD}MODEL ALIASES:${NC}
   claude-opus-4, claude-opus-4.6, claude-sonnet-4.6, gpt-4.1-mini, gpt-5.4,
@@ -1482,9 +1557,10 @@ fi
 ensure_db; migrate_legacy_json_if_needed; init_state
 CURRENT_PROJECT=$(get_current_project); [[ -z "$CURRENT_PROJECT" ]] && CURRENT_PROJECT=default
 CURRENT_SID=$(get_current_mas_session_id); [[ -z "$CURRENT_SID" ]] && CURRENT_SID="mas-${CURRENT_PROJECT}-$(date +%Y%m%d)"
+CURRENT_DOMAIN=$(get_state_field domain); [[ -z "$CURRENT_DOMAIN" ]] && CURRENT_DOMAIN=finance
 
 case "${1:-}" in
-  new) shift; new_project "${*:-}" ;;
+  new) shift; new_project "$@" ;;
   use) shift; use_project "${*:-}" ;;
   projects|ls) list_projects ;;
   project|whoami) show_project_quick ;;

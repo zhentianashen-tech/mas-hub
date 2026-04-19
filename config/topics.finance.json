@@ -1,0 +1,9 @@
+{
+  "financial":      ["valuation", "dcf", "revenue", "earnings", "eps", "pe ratio", "margin", "cash flow", "ebitda", "fcf"],
+  "equity":         ["equity", "stock", "share", "invest", "return", "dividend", "buy", "sell", "hold", "long", "short"],
+  "portfolio":      ["portfolio", "diversify", "allocation", "position", "weight", "basket", "exposure"],
+  "semiconductors": ["chip", "semiconductor", "gpu", "cpu", "fabrication", "tsmc", "foundry", "wafer", "nm node"],
+  "growth":         ["growth", "cagr", "expansion", "scaling", "moat", "advantage", "penetration"],
+  "macro":          ["gdp", "inflation", "interest rate", "fed", "monetary policy", "fiscal", "yield curve"],
+  "commodities":    ["commodity", "oil", "gas", "metals", "agriculture", "futures", "spot price", "supply chain"]
+}
